@@ -43,7 +43,8 @@ jobs:
               'source-parts/part11-12.b64',
               'source-parts/tail00.b64',
               'source-parts/tail01.b64',
-              'source-parts/tail02.b64',
+              'source-parts/tail02a.b64',
+              'source-parts/tail02b.b64',
               'source-parts/tail03.b64',
               'source-parts/tail04.b64',
               'source-parts/tail05.b64',
@@ -51,10 +52,6 @@ jobs:
               'source-parts/tail07.b64',
               'source-parts/tail08.b64',
           ]
-
-          for name in parts:
-              if not Path(name).is_file():
-                  raise SystemExit(f'Missing source part: {name}')
 
           encoded = ''.join(Path(name).read_text() for name in parts)
           if len(encoded) != 175480:
@@ -70,15 +67,11 @@ jobs:
 
           archive_path = Path('/tmp/imwiki-source-final.tgz')
           archive_path.write_bytes(archive)
-
           with tarfile.open(archive_path, 'r:gz') as tf:
               for member in tf.getmembers():
                   p = Path(member.name)
-                  if p.is_absolute() or '..' in p.parts:
-                      raise SystemExit(f'Unsafe archive path: {member.name}')
-                  if member.issym() or member.islnk():
-                      raise SystemExit(f'Links are not allowed in source archive: {member.name}')
-
+                  if p.is_absolute() or '..' in p.parts or member.issym() or member.islnk():
+                      raise SystemExit(f'Unsafe archive member: {member.name}')
           print(f'Archive verified: {len(archive)} bytes, sha256={digest}')
           PY
 
