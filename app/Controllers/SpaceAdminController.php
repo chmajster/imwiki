@@ -1,0 +1,10 @@
+<?php
+declare(strict_types=1);
+namespace ImWiki\Controllers;
+use ImWiki\Http\Request;use ImWiki\Http\Response;use ImWiki\Repositories\PageRepository;use ImWiki\Repositories\SpaceRepository;use ImWiki\Repositories\UserRepository;use ImWiki\Security\Authorization;use ImWiki\Services\NotificationService;use ImWiki\Services\SpaceManagementService;use ImWiki\Support\Url;use ImWiki\View\View;use PDO;use Throwable;
+final class SpaceAdminController extends BaseController{
+ public function __construct(PDO $pdo,string $prefix,View $view,UserRepository $users,Authorization $authz,?NotificationService $notifications,private readonly SpaceRepository $spaces,private readonly PageRepository $pages,private readonly SpaceManagementService $service){parent::__construct($pdo,$prefix,$view,$users,$authz,$notifications);}
+ public function settings(Request $r,array $p):void{$uid=$this->requireAuth();$space=$this->spaces->findByKey((string)$p['key']);if(!$space||!$this->authz->canManageSpace($uid,(int)$space['id'])){http_response_code(403);return;}echo $this->view->render('spaces/settings.php',$this->common(['space'=>$space,'pagesList'=>$this->pages->treeVisible((int)$space['id'],$uid,$this->authz->isAdmin($uid))]));}
+ public function save(Request $r,array $p):void{$uid=$this->requireAuth();$this->csrf($r);try{$this->service->update((string)$p['key'],$uid,$r->all());$this->audit($r,'space.updated','space',null,'Zmieniono ustawienia Space');Response::redirect(Url::to('/spaces/'.$p['key'].'/settings?saved=1'));}catch(Throwable){Response::redirect(Url::to('/spaces/'.$p['key'].'/settings?error=1'));}}
+ public function archive(Request $r,array $p):void{$uid=$this->requireAuth();$this->csrf($r);try{$archive=(string)$r->input('archive','1')==='1';$this->service->archive((string)$p['key'],$uid,$archive);$this->audit($r,$archive?'space.archived':'space.restored','space',null,$archive?'Zarchiwizowano Space':'Przywrócono Space');Response::redirect(Url::to('/spaces/'.$p['key'].'?overview=1'));}catch(Throwable){http_response_code(403);}}
+}

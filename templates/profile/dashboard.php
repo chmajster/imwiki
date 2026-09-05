@@ -1,0 +1,3 @@
+<?php use ImWiki\Security\Csrf;use ImWiki\Security\Html;$title='Układ dashboardu'; ?>
+<div class="page-head"><div><p class="eyebrow">Profil</p><h1>Dashboard</h1></div></div><?php if(isset($_GET['saved'])):?><div class="alert success">Układ zapisano.</div><?php endif;?>
+<section class="card section-card"><p class="muted">Wybierz widgety widoczne na Twoim dashboardzie.</p><form method="post" class="stack-form"><?=Csrf::field()?><?php foreach($options as $key=>$label):?><label class="check-row"><input type="checkbox" name="widgets[]" value="<?=Html::e($key)?>" <?=in_array($key,$widgets,true)?'checked':''?>> <?=Html::e($label)?></label><?php endforeach;?><button class="button">Zapisz układ</button></form></section>

@@ -1,0 +1,12 @@
+<?php
+declare(strict_types=1);
+namespace ImWiki\Controllers;
+use ImWiki\Http\Request;use ImWiki\Http\Response;use ImWiki\Repositories\UserRepository;use ImWiki\Security\Authorization;use ImWiki\Services\ImportExportService;use ImWiki\Services\NotificationService;use ImWiki\Support\Url;use ImWiki\View\View;use PDO;use Throwable;
+final class ImportExportController extends BaseController{
+ public function __construct(PDO $pdo,string $prefix,View $view,UserRepository $users,Authorization $authz,?NotificationService $notifications,private readonly ImportExportService $service){parent::__construct($pdo,$prefix,$view,$users,$authz,$notifications);}
+ public function pageMarkdown(Request $r,array $p):never{$uid=$this->requireAuth();try{$x=$this->service->pageMarkdown((int)$p['id'],$uid);$this->downloadText($x['name'],'text/markdown; charset=utf-8',$x['content']);}catch(Throwable){http_response_code(404);exit;}}
+ public function pageHtml(Request $r,array $p):never{$uid=$this->requireAuth();try{$x=$this->service->pageHtml((int)$p['id'],$uid);$this->downloadText($x['name'],'text/html; charset=utf-8',$x['content']);}catch(Throwable){http_response_code(404);exit;}}
+ public function spaceZip(Request $r,array $p):never{$uid=$this->requireAuth();try{$file=$this->service->spaceZip((string)$p['key'],$uid);header('Content-Type: application/zip');header('Content-Disposition: attachment; filename="imwiki-space-'.rawurlencode((string)$p['key']).'.zip"');header('Content-Length: '.filesize($file));readfile($file);@unlink($file);exit;}catch(Throwable){http_response_code(404);exit;}}
+ public function import(Request $r,array $p):void{$uid=$this->requireAuth();$this->csrf($r);try{$type=(string)$r->input('type','md');if($type==='zip')$created=$this->service->importZip((string)$p['key'],$_FILES['import_file']??[],$uid);else $created=[$this->service->importMarkdown((string)$p['key'],$_FILES['import_file']??[],$uid)];$this->audit($r,'content.imported','space',null,'Zaimportowano '.count($created).' stron');Response::redirect(Url::to('/spaces/'.$p['key'].'?overview=1&imported='.count($created)));}catch(Throwable){Response::redirect(Url::to('/spaces/'.$p['key'].'?overview=1&import=error'));}}
+ private function downloadText(string $name,string $type,string $content):never{header('Content-Type: '.$type);header('Content-Disposition: attachment; filename*=UTF-8\'\''.rawurlencode($name));header('Content-Length: '.strlen($content));echo$content;exit;}
+}

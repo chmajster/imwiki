@@ -1,0 +1,15 @@
+{
+  "openapi":"3.0.3",
+  "info":{"title":"imWiki REST API","version":"0.2.0"},
+  "servers":[{"url":"./api/v1"}],
+  "components":{"securitySchemes":{"bearerAuth":{"type":"http","scheme":"bearer","bearerFormat":"imw_ token"}}},
+  "security":[{"bearerAuth":[]}],
+  "paths":{
+    "/spaces":{"get":{"summary":"List visible spaces","responses":{"200":{"description":"OK"},"401":{"description":"Unauthorized"},"403":{"description":"Missing scope"}}}},
+    "/pages/{id}":{"get":{"summary":"Get page with normal ACL","parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"integer"}}],"responses":{"200":{"description":"OK"},"404":{"description":"Not found or not visible"}}},"put":{"summary":"Update a page using optimistic locking","parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"integer"}}],"responses":{"200":{"description":"Updated"},"409":{"description":"Version conflict"}}}},
+    "/pages":{"post":{"summary":"Create page","responses":{"201":{"description":"Created"},"403":{"description":"Forbidden"}}}},
+    "/search":{"get":{"summary":"Search visible pages","parameters":[{"name":"q","in":"query","schema":{"type":"string"}}],"responses":{"200":{"description":"OK"}}}},
+    "/pages/{id}/attachments":{"post":{"summary":"Upload attachment","responses":{"201":{"description":"Created"}}}},
+    "/attachments/{id}":{"get":{"summary":"Download current attachment version","responses":{"200":{"description":"Binary attachment"},"404":{"description":"Not found or not visible"}}}}
+  }
+}

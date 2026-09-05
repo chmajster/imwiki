@@ -1,0 +1,2 @@
+<?php use ImWiki\Security\Html;use ImWiki\Support\Url;$title='Przerwa techniczna';?>
+<section class="card maintenance-card"><p class="eyebrow">imWiki</p><h1>Trwa przerwa techniczna</h1><p>Administrator wykonuje prace konserwacyjne. Dane pozostają niedostępne do czasu zakończenia prac.</p><p class="muted">Reference: <?=Html::e($requestId??IMWIKI_REQUEST_ID)?></p><?php if(!$currentUser):?><a class="button secondary" href="<?=Html::e(Url::to('/login'))?>">Logowanie administratora</a><?php endif;?></section>

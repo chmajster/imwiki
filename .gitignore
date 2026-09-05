@@ -1,0 +1,14 @@
+/config/config.php
+/storage/installed.lock
+/storage/logs/*
+!/storage/logs/.gitkeep
+/storage/cache/*
+!/storage/cache/.gitkeep
+/storage/private/*
+!/storage/private/.gitkeep
+/storage/uploads/*
+!/storage/uploads/.gitkeep
+/vendor/
+/node_modules/
+.DS_Store
+Thumbs.db
