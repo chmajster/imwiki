@@ -5,7 +5,7 @@ on:
     branches:
       - feature/production-foundation
     paths:
-      - bootstrap-source.tgz.b64
+      - source-parts/**
       - .github/workflows/bootstrap.yml
   workflow_dispatch:
 
@@ -20,27 +20,90 @@ jobs:
         with:
           ref: feature/production-foundation
           fetch-depth: 0
-      - name: Verify and unpack final source
+
+      - name: Reconstruct and verify source archive
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
-          import string
+          import base64
+          import hashlib
+          import tarfile
 
-          raw = Path('bootstrap-source.tgz.b64').read_text()
-          allowed = set(string.ascii_letters + string.digits + '+/=\r\n\t ')
-          bad = [(i, ch) for i, ch in enumerate(raw) if ch not in allowed]
-          print('length=', len(raw), 'bad_count=', len(bad))
-          for i, ch in bad[:20]:
-              lo=max(0,i-60); hi=min(len(raw),i+61)
-              print('bad', i, repr(ch), repr(raw[lo:hi]))
-          if bad:
-              raise SystemExit(2)
+          parts = [
+              'source-parts/part00.b64',
+              'source-parts/part01.b64',
+              'source-parts/part02.b64',
+              'source-parts/part03-04.b64',
+              'source-parts/part05-06.b64',
+              'source-parts/part07-08.b64',
+              'source-parts/part09-10.b64',
+              'source-parts/part-missing04.b64',
+              'source-parts/part11-12.b64',
+              'source-parts/part15-16.b64',
+              'source-parts/part17-18.b64',
+              'source-parts/part19.b64',
+          ]
+
+          for name in parts:
+              if not Path(name).is_file():
+                  raise SystemExit(f'Missing source part: {name}')
+
+          encoded = ''.join(Path(name).read_text() for name in parts)
+          if len(encoded) != 175480:
+              raise SystemExit(f'Unexpected base64 length: {len(encoded)}')
+          if hashlib.sha256(encoded.encode()).hexdigest() != '245bbe4084954a73af833d089956279a3926b6f4ae59c68df8e7d44cf07b0b52':
+              raise SystemExit('Base64 stream checksum mismatch')
+
+          archive = base64.b64decode(encoded, validate=True)
+          digest = hashlib.sha256(archive).hexdigest()
+          if digest != 'e5984a24ec7b238e754b2b85dae0f171c1d5ef8a7142e7bb8176bde2cf48b175':
+              raise SystemExit(f'Archive checksum mismatch: {digest}')
+
+          archive_path = Path('/tmp/imwiki-source-final.tgz')
+          archive_path.write_bytes(archive)
+
+          with tarfile.open(archive_path, 'r:gz') as tf:
+              for member in tf.getmembers():
+                  p = Path(member.name)
+                  if p.is_absolute() or '..' in p.parts:
+                      raise SystemExit(f'Unsafe archive path: {member.name}')
+                  if member.issym() or member.islnk():
+                      raise SystemExit(f'Links are not allowed in source archive: {member.name}')
+
+          print(f'Archive verified: {len(archive)} bytes, sha256={digest}')
           PY
-      - name: Commit final repository source
-        if: ${{ false }}
-        shell: bash
-        run: echo diagnostics-only
 
-# Temporary diagnostics; replaced after separator identification.
+      - name: Replace repository tree with verified source
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          tar --no-same-owner --no-same-permissions -xzf /tmp/imwiki-source-final.tgz -C .
+          test -f index.php
+          test -f install.php
+          test -f tests/run.php
+          test -f .github/workflows/ci.yml
+          test -f .github/workflows/release.yml
+
+      - name: Validate imported source
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -type f -name '*.php' -print0 | xargs -0 -n1 php -l >/tmp/php-lint.log
+          php tests/run.php
+          if [ -f public/assets/app.js ]; then node --check public/assets/app.js; fi
+          if find . -type f -name '*.js' -not -path './.git/*' -print -quit | grep -q .; then
+            while IFS= read -r -d '' file; do node --check "$file"; done < <(find . -type f -name '*.js' -not -path './.git/*' -print0)
+          fi
+
+      - name: Commit final repository source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: complete imWiki 0.2.0 platform'
+          git push origin HEAD:feature/production-foundation
