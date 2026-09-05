@@ -1,0 +1,31 @@
+name: Release ZIP
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version
+        id: version
+        run: echo "version=$(php -r \"require 'bootstrap.php'; echo IMWIKI_VERSION;\")" >> "$GITHUB_OUTPUT"
+      - name: Build production package
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/imwiki
+          rsync -a ./ /tmp/imwiki/ \
+            --exclude='.git/' --exclude='.github/' --exclude='tests/' \
+            --exclude='config/config.php' --exclude='storage/installed.lock' \
+            --exclude='storage/logs/*' --exclude='storage/cache/*' \
+            --exclude='storage/private/*' --exclude='storage/uploads/*'
+          cd /tmp/imwiki
+          zip -qr "$GITHUB_WORKSPACE/imwiki-${{ steps.version.outputs.version }}.zip" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: imwiki-${{ steps.version.outputs.version }}
+          path: imwiki-${{ steps.version.outputs.version }}.zip
