@@ -1,0 +1,39 @@
+name: Bootstrap production source
+
+on:
+  push:
+    branches:
+      - feature/production-foundation
+    paths:
+      - bootstrap-source.tgz.b64
+      - .github/workflows/bootstrap.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/production-foundation
+          fetch-depth: 0
+      - name: Verify and unpack source
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d bootstrap-source.tgz.b64 > /tmp/imwiki-source.tgz
+          echo 'f52cbaf64cc4a070f5bf7e8731c43fd77b6d6db7d4a02c169688e5a17433e968  /tmp/imwiki-source.tgz' | sha256sum -c -
+          tar -xzf /tmp/imwiki-source.tgz -C .
+          rm -f bootstrap-source.tgz.b64 .github/workflows/bootstrap.yml
+      - name: Commit generated repository source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: implement imWiki production foundation'
+          git push origin HEAD:feature/production-foundation
