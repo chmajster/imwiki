@@ -25,41 +25,22 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import base64
           from pathlib import Path
+          import string
 
-          data = ''.join(Path('bootstrap-source.tgz.b64').read_text().split())
-          out = bytearray()
-          start = 0
-          i = 0
-          while i < len(data):
-              if data[i] == '=':
-                  end = i + 1
-                  if end < len(data) and data[end] == '=':
-                      end += 1
-                  segment = data[start:end]
-                  out.extend(base64.b64decode(segment, validate=True))
-                  start = end
-                  i = end
-                  continue
-              i += 1
-          if start < len(data):
-              segment = data[start:]
-              out.extend(base64.b64decode(segment, validate=True))
-          Path('/tmp/imwiki-source.tgz').write_bytes(out)
-          print(f'decoded {len(out)} bytes')
+          raw = Path('bootstrap-source.tgz.b64').read_text()
+          allowed = set(string.ascii_letters + string.digits + '+/=\r\n\t ')
+          bad = [(i, ch) for i, ch in enumerate(raw) if ch not in allowed]
+          print('length=', len(raw), 'bad_count=', len(bad))
+          for i, ch in bad[:20]:
+              lo=max(0,i-60); hi=min(len(raw),i+61)
+              print('bad', i, repr(ch), repr(raw[lo:hi]))
+          if bad:
+              raise SystemExit(2)
           PY
-          echo '4d71f27d0399b1a422a7bd4fdce3703085daa39d67210207e790f5d1a86b5bda  /tmp/imwiki-source.tgz' | sha256sum -c -
-          tar -xzf /tmp/imwiki-source.tgz -C .
-          rm -f bootstrap-source.tgz.b64 .github/workflows/bootstrap.yml
       - name: Commit final repository source
+        if: ${{ false }}
         shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'feat: complete imWiki 0.2.0 platform'
-          git push origin HEAD:feature/production-foundation
+        run: echo diagnostics-only
 
-# This workflow is intentionally self-deleting after a successful source import.
+# Temporary diagnostics; replaced after separator identification.
