@@ -6,6 +6,7 @@ on:
       - feature/production-foundation
     paths:
       - bootstrap-source.tgz.b64
+      - .github/workflows/bootstrap.yml
   workflow_dispatch:
 
 permissions:
