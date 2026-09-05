@@ -24,7 +24,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d bootstrap-source.tgz.b64 > /tmp/imwiki-source.tgz
+          : > /tmp/imwiki-source.tgz
+          while IFS= read -r line || [ -n "$line" ]; do
+            [ -z "$line" ] && continue
+            printf '%s' "$line" | base64 -d >> /tmp/imwiki-source.tgz
+          done < bootstrap-source.tgz.b64
           echo '4d71f27d0399b1a422a7bd4fdce3703085daa39d67210207e790f5d1a86b5bda  /tmp/imwiki-source.tgz' | sha256sum -c -
           tar -xzf /tmp/imwiki-source.tgz -C .
           rm -f bootstrap-source.tgz.b64 .github/workflows/bootstrap.yml
@@ -39,4 +43,3 @@ jobs:
           git push origin HEAD:feature/production-foundation
 
 # This workflow is intentionally self-deleting after a successful source import.
-# retry 2026-09-05T21:11+02:00
