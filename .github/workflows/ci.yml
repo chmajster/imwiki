@@ -1,0 +1,41 @@
+name: CI
+on:
+  push:
+    branches: [main, feature/production-foundation]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_DATABASE: imwiki_test
+          MARIADB_USER: imwiki
+          MARIADB_PASSWORD: imwiki
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PHP extensions
+        run: sudo apt-get update && sudo apt-get install -y php8.3-mysql php8.3-mbstring php8.3-xml php8.3-zip
+      - name: PHP syntax
+        run: find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -n1 php -l
+      - name: Unit and security tests
+        run: php tests/run.php
+      - name: Fresh migration install
+        env:
+          TEST_DB_HOST: 127.0.0.1
+          TEST_DB_PORT: 3306
+          TEST_DB_NAME: imwiki_test
+          TEST_DB_USER: imwiki
+          TEST_DB_PASS: imwiki
+        run: php tests/fresh_install.php
+      - name: JavaScript syntax
+        run: node --check public/assets/app.js
