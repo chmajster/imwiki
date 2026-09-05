@@ -95,10 +95,14 @@ jobs:
           php tests/run.php
           while IFS= read -r -d '' file; do node --check "$file"; done < <(find . -type f -name '*.js' -not -path './.git/*' -print0)
 
-      - name: Commit final repository source
+      - name: Commit application source
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p /tmp/imwiki-workflows
+          cp .github/workflows/ci.yml /tmp/imwiki-workflows/ci.yml
+          cp .github/workflows/release.yml /tmp/imwiki-workflows/release.yml
+          rm -rf .github/workflows
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
