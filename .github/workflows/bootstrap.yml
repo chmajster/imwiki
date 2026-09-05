@@ -25,9 +25,18 @@ jobs:
         run: |
           set -euo pipefail
           : > /tmp/imwiki-source.tgz
+          n=0
           while IFS= read -r line || [ -n "$line" ]; do
+            n=$((n+1))
             [ -z "$line" ] && continue
-            printf '%s' "$line" | base64 -d >> /tmp/imwiki-source.tgz
+            if ! printf '%s' "$line" | base64 -d >> /tmp/imwiki-source.tgz 2>/tmp/b64.err; then
+              echo "Invalid base64 at line $n"
+              printf 'head=%s\n' "${line:0:80}"
+              len=${#line}
+              if [ "$len" -gt 80 ]; then printf 'tail=%s\n' "${line: -80}"; fi
+              cat /tmp/b64.err
+              exit 1
+            fi
           done < bootstrap-source.tgz.b64
           echo '4d71f27d0399b1a422a7bd4fdce3703085daa39d67210207e790f5d1a86b5bda  /tmp/imwiki-source.tgz' | sha256sum -c -
           tar -xzf /tmp/imwiki-source.tgz -C .
@@ -37,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git config user.email '4189828+github-actions[bot]@users.noreply.github.com'
           git add -A
           git commit -m 'feat: complete imWiki 0.2.0 platform'
           git push origin HEAD:feature/production-foundation
