@@ -45,7 +45,8 @@ Wszystkie istotne zmiany imWiki są dokumentowane zgodnie z SemVer.
 - reguły `X-Forwarded-*` są honorowane wyłącznie dla zaufanych proxy,
 - plugin ZIP ma limity rozmiaru/liczby plików, kontrolę path traversal i allowlistę typów plików,
 - upload może być podłączony do skanera i obsługuje kwarantannę,
-- audit i job errors maskują dane wyglądające jak sekrety.
+- audit i job errors maskują dane wyglądające jak sekrety,
+- ID aktywnej sesji PHP jest okresowo regenerowane co 15 minut, niezależnie od regeneracji wykonywanej podczas logowania; rotacja zachowuje dane zalogowanej sesji i nie zmienia 60-minutowego timeoutu bezczynności.
 
 ## [0.2.0] - 2026-09-05
 
