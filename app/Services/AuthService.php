@@ -24,7 +24,14 @@ final class AuthService
 
     public function loginUser(array $user):void
     {
-        session_regenerate_id(true);$_SESSION['user_id']=(int)$user['id'];$_SESSION['authenticated_at']=time();$_SESSION['last_seen_at']=time();unset($_SESSION['pending_2fa_user_id'],$_SESSION['pending_2fa_started_at']);$this->users->touchLogin((int)$user['id']);
+        session_regenerate_id(true);
+        $now=time();
+        $_SESSION['user_id']=(int)$user['id'];
+        $_SESSION['authenticated_at']=$now;
+        $_SESSION['last_seen_at']=$now;
+        $_SESSION['session_regenerated_at']=$now;
+        unset($_SESSION['pending_2fa_user_id'],$_SESSION['pending_2fa_started_at']);
+        $this->users->touchLogin((int)$user['id']);
     }
 
     public function logout():void
