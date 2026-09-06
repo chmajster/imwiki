@@ -40,7 +40,7 @@ $r=$http($base.'/spaces/SMOKE/pages/create');
 $r=$http($base.'/spaces/SMOKE/pages/create','POST',['_csrf'=>$csrf($r['body']),'title'=>'Release Artifact Page','content'=>'<h1>Release Artifact Page</h1><p>Browser-only installation verified.</p>','parent_id'=>'0','template_id'=>'0']);
 $assert(str_contains($r['body'],'Release Artifact Page'),'Page create');
 $r=$http($base.'/admin/enterprise');$assert($r['status']===200&&str_contains($r['body'],'Enterprise Administration'),'Enterprise UI');
-$pdo=new PDO('mysql:host='.getenv('SMOKE_DB_HOST').';port='.getenv('SMOKE_DB_PORT').';dbname='.getenv('SMPOKE_DB_NAME').';charset=utf8mb4',getenv('SMOKE_DB_USER'),getenv('SMOKE_DB_PASS'),[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
+$pdo=new PDO('mysql:host='.getenv('SMOKE_DB_HOST').';port='.getenv('SMOKE_DB_PORT').';dbname='.getenv('SMOKE_DB_NAME').';charset=utf8mb4',getenv('SMOKE_DB_USER'),getenv('SMOKE_DB_PASS'),[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
 $uuid=$pdo->query("SELECT uuid FROM pages WHERE title='Release Artifact Page' LIMIT 1")->fetchColumn();
 $assert(is_string($uuid)&&preg_match('/^[0-9a-f-]{36}$/i',$uuid)===1,'UUID');
 $assert((int)$pdo->query('SELECT COUNT(*) FROM migrations')->fetchColumn()>=10,'Migrations');
