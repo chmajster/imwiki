@@ -8,6 +8,8 @@ use ImWiki\Security\Crypto;
 use ImWiki\Security\Csrf;
 use ImWiki\Security\Html;
 use ImWiki\Security\SsrfGuard;
+use ImWiki\Support\Config;
+use ImWiki\Support\Url;
 
 $failures = [];
 $assert = static function (bool $ok, string $name) use (&$failures): void {
@@ -38,6 +40,17 @@ $guard = new SsrfGuard();
 foreach (['http://127.0.0.1/x','http://localhost/x','http://169.254.169.254/latest/meta-data'] as $url) {
     try { $guard->validate($url); $assert(false, 'ssrf rejects ' . $url); } catch (Throwable) { $assert(true, 'ssrf rejects ' . $url); }
 }
+
+$oldScript=$_SERVER['SCRIPT_NAME']??null;
+$configFile=tempnam(sys_get_temp_dir(),'imwiki-config-');
+file_put_contents($configFile,"<?php return ['app'=>['base_path'=>'']];\n");
+Config::load($configFile);$_SERVER['SCRIPT_NAME']='/login';
+$assert(Url::basePath()==='', 'configured root base path overrides rewritten script name');
+file_put_contents($configFile,"<?php return ['app'=>['base_path'=>'/wiki']];\n");
+Config::load($configFile);$_SERVER['SCRIPT_NAME']='/wiki/login';
+$assert(Url::basePath()==='/wiki', 'configured subdirectory base path is stable');
+unlink($configFile);Config::load('/nonexistent-imwiki-test-config.php');
+if($oldScript===null)unset($_SERVER['SCRIPT_NAME']);else $_SERVER['SCRIPT_NAME']=$oldScript;
 
 if ($failures) {
     fwrite(STDERR, "FAILED:\n - " . implode("\n - ", $failures) . "\n");
