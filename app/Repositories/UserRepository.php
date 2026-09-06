@@ -11,9 +11,9 @@ final class UserRepository
 
     public function findByLogin(string $login): ?array
     {
-        $sql = "SELECT * FROM `{$this->prefix}users` WHERE deleted_at IS NULL AND (username = :login OR email = :login) LIMIT 1";
+        $sql = "SELECT * FROM `{$this->prefix}users` WHERE deleted_at IS NULL AND (username = :username OR email = :email) LIMIT 1";
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute(['login' => $login]);
+        $stmt->execute(['username' => $login, 'email' => $login]);
         $row = $stmt->fetch();
         return $row ?: null;
     }
