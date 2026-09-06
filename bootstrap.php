@@ -1,15 +1,18 @@
 <?php
 declare(strict_types=1);
 
+use ImWiki\Security\SecurityHeaders;
+use ImWiki\Security\SessionIdRotationPolicy;
 use ImWiki\Support\Autoloader;
 use ImWiki\Support\Config;
+use ImWiki\Support\Stage3FrontController;
 use ImWiki\Support\Url;
 
 require_once __DIR__ . '/app/Support/Autoloader.php';
 Autoloader::register(__DIR__);
 Config::load(__DIR__ . '/config/config.php');
 
-define('IMWIKI_VERSION', '0.2.0');
+define('IMWIKI_VERSION', '0.3.0');
 if (!defined('IMWIKI_REQUEST_ID')) {
     define('IMWIKI_REQUEST_ID', bin2hex(random_bytes(8)));
 }
@@ -17,13 +20,18 @@ if (!defined('IMWIKI_REQUEST_ID')) {
 if (session_status() !== PHP_SESSION_ACTIVE) {
     session_name('imwiki_session');
     $basePath = Url::basePath();
+    $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
     session_set_cookie_params([
         'httponly' => true,
-        'secure' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+        'secure' => $secure,
         'samesite' => 'Lax',
         'path' => ($basePath === '' ? '/' : rtrim($basePath,'/') . '/'),
     ]);
-    session_start();
+    if (!@session_start()) {
+        http_response_code(500);
+        echo '<!doctype html><html lang="pl"><meta charset="utf-8"><title>imWiki</title><main><h1>Nie można uruchomić bezpiecznej sesji.</h1><p>Administrator powinien sprawdzić konfigurację session storage PHP.</p></main></html>';
+        exit;
+    }
 }
 
 if (isset($_SESSION['user_id'])) {
@@ -38,11 +46,23 @@ if (isset($_SESSION['user_id'])) {
         session_regenerate_id(true);
     } else {
         $_SESSION['last_seen_at'] = $now;
+        if (SessionIdRotationPolicy::due($_SESSION, $now) && session_regenerate_id(true)) {
+            $_SESSION['session_regenerated_at'] = $now;
+        }
     }
 }
 
 header('X-Request-ID: ' . IMWIKI_REQUEST_ID);
-header('X-Content-Type-Options: nosniff');
-header('Referrer-Policy: strict-origin-when-cross-origin');
-header("Permissions-Policy: camera=(), microphone=(), geolocation=()");
-header("Content-Security-Policy: default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+SecurityHeaders::send([
+    'https' => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+    'hsts' => false,
+    'csp_report_only' => false,
+]);
+
+// Stage 3 augments selected enterprise/auth/health routes while the proven Stage 2
+// front controller remains responsible for the rest of the application.
+if (Stage3FrontController::shouldHandle()) {
+    if (Stage3FrontController::handle(__DIR__)) {
+        exit;
+    }
+}

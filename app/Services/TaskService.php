@@ -3,77 +3,49 @@ declare(strict_types=1);
 
 namespace ImWiki\Services;
 
+use ImWiki\Exceptions\AuthorizationException;
+use ImWiki\Exceptions\ValidationException;
 use ImWiki\Repositories\PageRepository;
 use ImWiki\Security\Authorization;
 use PDO;
 
 final class TaskService
 {
-    public function __construct(
-        private readonly PDO $pdo,
-        private readonly string $prefix,
-        private readonly PageRepository $pages,
-        private readonly Authorization $authz,
-        private readonly NotificationService $notifications,
-    ) {}
+    public function __construct(private readonly PDO $pdo,private readonly string $prefix,private readonly PageRepository $pages,private readonly Authorization $authz,private readonly NotificationService $notifications){}
 
-    public function create(int $pageId, string $description, ?string $assigneeUsername, ?string $dueDate, int $creatorId): int
+    public function create(int $pageId,string $description,?string $assigneeUsername,?string $dueDate,int $creatorId,string $priority='normal',array $labels=[]):int
     {
-        $page = $this->pages->find($pageId);
-        if (!$page || !$this->authz->canEditPage($creatorId,$page)) throw new \RuntimeException('FORBIDDEN');
-        $description = trim($description);
-        if ($description === '' || mb_strlen($description) > 1000) throw new \InvalidArgumentException('Opis zadania jest wymagany i może mieć maksymalnie 1000 znaków.');
-
-        $assigneeId = null;
-        if ($assigneeUsername !== null && trim($assigneeUsername) !== '') {
-            $stmt = $this->pdo->prepare("SELECT id FROM `{$this->prefix}users` WHERE username=? AND status='active' AND deleted_at IS NULL LIMIT 1");
-            $stmt->execute([trim($assigneeUsername)]);
-            $assigneeId = (int)($stmt->fetchColumn() ?: 0);
-            if ($assigneeId <= 0) throw new \InvalidArgumentException('Nie znaleziono aktywnego użytkownika o podanym loginie.');
-        }
-        if ($dueDate !== null && $dueDate !== '' && !preg_match('/^\d{4}-\d{2}-\d{2}$/',$dueDate)) throw new \InvalidArgumentException('Nieprawidłowa data terminu.');
-
-        $stmt = $this->pdo->prepare("INSERT INTO `{$this->prefix}tasks` (page_id,description,status,assignee_id,created_by,due_date,created_at,updated_at) VALUES (?,?,'open',?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
-        $stmt->execute([$pageId,$description,$assigneeId,$creatorId,$dueDate ?: null]);
-        $id = (int)$this->pdo->lastInsertId();
-        if ($assigneeId !== null && $assigneeId !== $creatorId) {
-            $this->notifications->create($assigneeId,'task.assigned',$creatorId,'task',$id,'/pages/'.$pageId.'#tasks',['description'=>$description]);
-        }
-        return $id;
+        $page=$this->pages->find($pageId);if(!$page||!$this->authz->canEditPage($creatorId,$page))throw new AuthorizationException();$description=trim($description);if($description===''||mb_strlen($description)>1000)throw new ValidationException('Opis zadania jest wymagany i może mieć maksymalnie 1000 znaków.');if(!in_array($priority,['low','normal','high','critical'],true))throw new ValidationException('Invalid task priority.');$assigneeId=$this->assigneeId($assigneeUsername);if($dueDate!==null&&$dueDate!==''&&(!preg_match('/^\d{4}-\d{2}-\d{2}$/',$dueDate)||strtotime($dueDate)===false))throw new ValidationException('Nieprawidłowa data terminu.');$labels=$this->cleanLabels($labels);
+        $stmt=$this->pdo->prepare("INSERT INTO `{$this->prefix}tasks` (page_id,description,status,priority,assignee_id,created_by,due_date,labels_json,created_at,updated_at) VALUES (?,?,'open',?,?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");$stmt->execute([$pageId,$description,$priority,$assigneeId,$creatorId,$dueDate?:null,$labels?json_encode($labels,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE):null]);$id=(int)$this->pdo->lastInsertId();if($assigneeId!==null&&$assigneeId!==$creatorId)$this->notifications->create($assigneeId,'task.assigned',$creatorId,'task',$id,'/pages/'.$pageId.'#tasks',['description'=>$description,'priority'=>$priority,'due_date'=>$dueDate]);return$id;
     }
 
-    public function setCompleted(int $taskId, bool $completed, int $userId): int
+    public function update(int $taskId,int $actorId,array $changes):void
     {
-        $stmt = $this->pdo->prepare("SELECT t.*,p.space_id,p.author_id,p.owner_id,p.status page_status,p.restriction_mode FROM `{$this->prefix}tasks` t JOIN `{$this->prefix}pages` p ON p.id=t.page_id WHERE t.id=? AND p.deleted_at IS NULL");
-        $stmt->execute([$taskId]);
-        $task = $stmt->fetch();
-        if (!$task) throw new \RuntimeException('NOT_FOUND');
-        $page = $this->pages->find((int)$task['page_id']);
-        $allowed = (int)($task['assignee_id'] ?? 0)===$userId || (int)$task['created_by']===$userId || ($page && $this->authz->canEditPage($userId,$page));
-        if (!$allowed) throw new \RuntimeException('FORBIDDEN');
-        $upd = $this->pdo->prepare("UPDATE `{$this->prefix}tasks` SET status=?,completed_at=?,updated_at=UTC_TIMESTAMP() WHERE id=?");
-        $upd->execute([$completed?'done':'open',$completed?gmdate('Y-m-d H:i:s'):null,$taskId]);
-        return (int)$task['page_id'];
+        $task=$this->task($taskId);$page=$this->pages->find((int)$task['page_id']);$allowed=(int)$task['created_by']===$actorId||($page&&$this->authz->canEditPage($actorId,$page));if(!$allowed)throw new AuthorizationException();$description=isset($changes['description'])?trim((string)$changes['description']):(string)$task['description'];if($description===''||mb_strlen($description)>1000)throw new ValidationException('Invalid task description.');$priority=(string)($changes['priority']??$task['priority']);if(!in_array($priority,['low','normal','high','critical'],true))throw new ValidationException('Invalid task priority.');$due=array_key_exists('due_date',$changes)?trim((string)$changes['due_date']):(string)($task['due_date']??'');if($due!==''&&(!preg_match('/^\d{4}-\d{2}-\d{2}$/',$due)||strtotime($due)===false))throw new ValidationException('Invalid due date.');$assignee=array_key_exists('assignee_username',$changes)?$this->assigneeId((string)$changes['assignee_username']):($task['assignee_id']!==null?(int)$task['assignee_id']:null);$labels=array_key_exists('labels',$changes)?$this->cleanLabels((array)$changes['labels']):(json_decode((string)($task['labels_json']??'[]'),true)?:[]);$this->pdo->prepare("UPDATE `{$this->prefix}tasks` SET description=?,priority=?,assignee_id=?,due_date=?,labels_json=?,due_notified_at=NULL,overdue_notified_at=NULL,updated_at=UTC_TIMESTAMP() WHERE id=?")->execute([$description,$priority,$assignee,$due?:null,$labels?json_encode($labels,JSON_THROW_ON_ERROR|JSON_UNESCAPED_UNICODE):null,$taskId]);if($assignee!==null&&(int)($task['assignee_id']??0)!==$assignee)$this->notifications->create($assignee,'task.assigned',$actorId,'task',$taskId,'/pages/'.$task['page_id'].'#tasks',['description'=>$description,'priority'=>$priority,'due_date'=>$due?:null]);
     }
 
-    public function forPage(int $pageId): array
+    public function setStatus(int $taskId,string $status,int $userId):int
     {
-        $stmt = $this->pdo->prepare("SELECT t.*,u.username assignee_username,CONCAT(u.first_name,' ',u.last_name) assignee_name FROM `{$this->prefix}tasks` t LEFT JOIN `{$this->prefix}users` u ON u.id=t.assignee_id WHERE t.page_id=? ORDER BY (t.status='open') DESC,t.due_date IS NULL,t.due_date,t.created_at DESC LIMIT 100");
-        $stmt->execute([$pageId]);
-        return $stmt->fetchAll();
+        if(!in_array($status,['open','in_progress','done','cancelled'],true))throw new ValidationException('Invalid task status.');$task=$this->task($taskId);$page=$this->pages->find((int)$task['page_id']);$allowed=(int)($task['assignee_id']??0)===$userId||(int)$task['created_by']===$userId||($page&&$this->authz->canEditPage($userId,$page));if(!$allowed)throw new AuthorizationException();$completed=$status==='done'?gmdate('Y-m-d H:i:s'):null;$this->pdo->prepare("UPDATE `{$this->prefix}tasks` SET status=?,completed_at=?,updated_at=UTC_TIMESTAMP() WHERE id=?")->execute([$status,$completed,$taskId]);if($status==='done'&&(int)$task['created_by']!==$userId)$this->notifications->create((int)$task['created_by'],'task.completed',$userId,'task',$taskId,'/pages/'.$task['page_id'].'#tasks',['description'=>$task['description']]);return(int)$task['page_id'];
+    }
+    public function setCompleted(int $taskId,bool $completed,int $userId):int{return$this->setStatus($taskId,$completed?'done':'open',$userId);}
+
+    public function forPage(int $pageId):array{$stmt=$this->pdo->prepare("SELECT t.*,u.username assignee_username,CONCAT(u.first_name,' ',u.last_name) assignee_name,r.username reporter_username FROM `{$this->prefix}tasks` t LEFT JOIN `{$this->prefix}users` u ON u.id=t.assignee_id JOIN `{$this->prefix}users` r ON r.id=t.created_by WHERE t.page_id=? ORDER BY FIELD(t.status,'open','in_progress','done','cancelled'),FIELD(t.priority,'critical','high','normal','low'),t.due_date IS NULL,t.due_date,t.created_at DESC LIMIT 200");$stmt->execute([$pageId]);$rows=$stmt->fetchAll();foreach($rows as &$r)$r['labels']=json_decode((string)($r['labels_json']??'[]'),true)?:[];return$rows;}
+
+    public function dashboard(int $userId,string $view='assigned',array $filters=[]):array
+    {
+        $where=['p.deleted_at IS NULL'];$args=[];switch($view){case'created':$where[]='t.created_by=?';$args[]=$userId;break;case'overdue':$where[]='t.assignee_id=?';$args[]=$userId;$where[]="t.status IN ('open','in_progress') AND t.due_date<UTC_DATE()";break;case'due_soon':$where[]='t.assignee_id=?';$args[]=$userId;$where[]="t.status IN ('open','in_progress') AND t.due_date BETWEEN UTC_DATE() AND DATE_ADD(UTC_DATE(),INTERVAL 7 DAY)";break;case'completed':$where[]='t.assignee_id=?';$args[]=$userId;$where[]="t.status='done'";break;default:$where[]='t.assignee_id=?';$args[]=$userId;$where[]="t.status IN ('open','in_progress')";}
+        foreach(['assignee_id'=>'t.assignee_id','creator_id'=>'t.created_by','space_id'=>'p.space_id','page_id'=>'p.id'] as $key=>$column)if(!empty($filters[$key])){$where[]=$column.'=?';$args[]=(int)$filters[$key];}if(!empty($filters['status'])&&in_array($filters['status'],['open','in_progress','done','cancelled'],true)){$where[]='t.status=?';$args[]=$filters['status'];}if(!empty($filters['priority'])&&in_array($filters['priority'],['low','normal','high','critical'],true)){$where[]='t.priority=?';$args[]=$filters['priority'];}if(!empty($filters['due_from'])){$where[]='t.due_date>=?';$args[]=$filters['due_from'];}if(!empty($filters['due_to'])){$where[]='t.due_date<=?';$args[]=$filters['due_to'];}
+        $stmt=$this->pdo->prepare("SELECT t.*,p.title page_title,s.name space_name,s.space_key,u.username assignee_username,r.username reporter_username FROM `{$this->prefix}tasks` t JOIN `{$this->prefix}pages` p ON p.id=t.page_id JOIN `{$this->prefix}spaces` s ON s.id=p.space_id LEFT JOIN `{$this->prefix}users` u ON u.id=t.assignee_id JOIN `{$this->prefix}users` r ON r.id=t.created_by WHERE ".implode(' AND ',$where)." ORDER BY FIELD(t.priority,'critical','high','normal','low'),t.due_date IS NULL,t.due_date,t.updated_at DESC LIMIT 500");$stmt->execute($args);$rows=[];foreach($stmt->fetchAll() as $row){$page=$this->pages->find((int)$row['page_id']);if($page&&$this->authz->canViewPage($userId,$page)){$row['labels']=json_decode((string)($row['labels_json']??'[]'),true)?:[];$rows[]=$row;}}return$rows;
+    }
+    public function mine(int $userId,string $filter='open',?int $spaceId=null):array{$view=match($filter){'done'=>'completed','overdue'=>'overdue',default=>'assigned'};return$this->dashboard($userId,$view,$spaceId?['space_id'=>$spaceId]:[]);}
+
+    public function processDueNotifications(int $limit=100):int
+    {
+        $limit=max(1,min(500,$limit));$stmt=$this->pdo->query("SELECT t.*,p.title page_title FROM `{$this->prefix}tasks` t JOIN `{$this->prefix}pages` p ON p.id=t.page_id WHERE t.assignee_id IS NOT NULL AND t.status IN ('open','in_progress') AND t.due_date IS NOT NULL AND ((t.due_date<UTC_DATE() AND t.overdue_notified_at IS NULL) OR (t.due_date BETWEEN UTC_DATE() AND DATE_ADD(UTC_DATE(),INTERVAL 2 DAY) AND t.due_notified_at IS NULL)) ORDER BY t.due_date LIMIT ".$limit);$count=0;foreach($stmt->fetchAll() as $task){$overdue=(string)$task['due_date']<gmdate('Y-m-d');$column=$overdue?'overdue_notified_at':'due_notified_at';$guard=$this->pdo->prepare("UPDATE `{$this->prefix}tasks` SET {$column}=UTC_TIMESTAMP() WHERE id=? AND {$column} IS NULL");$guard->execute([(int)$task['id']]);if($guard->rowCount()!==1)continue;$this->notifications->create((int)$task['assignee_id'],$overdue?'task.overdue':'task.due_soon',null,'task',(int)$task['id'],'/pages/'.$task['page_id'].'#tasks',['description'=>$task['description'],'due_date'=>$task['due_date'],'page_title'=>$task['page_title']]);$count++;}return$count;
     }
 
-    public function mine(int $userId, string $filter='open', ?int $spaceId=null): array
-    {
-        $where=['t.assignee_id=:uid','p.deleted_at IS NULL'];
-        if ($filter==='open') $where[]="t.status='open'";
-        elseif ($filter==='done') $where[]="t.status='done'";
-        elseif ($filter==='overdue') $where[]="t.status='open' AND t.due_date IS NOT NULL AND t.due_date < UTC_DATE()";
-        if ($spaceId !== null) $where[]='p.space_id=:space';
-        $sql="SELECT t.*,p.title page_title,p.id page_id,s.name space_name,s.id space_id FROM `{$this->prefix}tasks` t JOIN `{$this->prefix}pages` p ON p.id=t.page_id JOIN `{$this->prefix}spaces` s ON s.id=p.space_id WHERE ".implode(' AND ',$where)." ORDER BY t.status,t.due_date IS NULL,t.due_date,t.updated_at DESC LIMIT 200";
-        $stmt=$this->pdo->prepare($sql); $params=['uid'=>$userId]; if($spaceId!==null)$params['space']=$spaceId; $stmt->execute($params);
-        $rows=[];
-        foreach($stmt->fetchAll() as $row){$page=$this->pages->find((int)$row['page_id']);if($page&&$this->authz->canViewPage($userId,$page))$rows[]=$row;}
-        return $rows;
-    }
+    private function task(int $id):array{$s=$this->pdo->prepare("SELECT * FROM `{$this->prefix}tasks` WHERE id=?");$s->execute([$id]);return$s->fetch()?:throw new ValidationException('Task not found.');}
+    private function assigneeId(?string $username):?int{if($username===null||trim($username)==='')return null;$stmt=$this->pdo->prepare("SELECT id FROM `{$this->prefix}users` WHERE username=? AND status='active' AND deleted_at IS NULL LIMIT 1");$stmt->execute([trim($username)]);$id=(int)($stmt->fetchColumn()?:0);if($id<=0)throw new ValidationException('Nie znaleziono aktywnego użytkownika o podanym loginie.');return$id;}
+    private function cleanLabels(array $labels):array{$out=[];foreach(array_slice($labels,0,20) as $v){$v=mb_strtolower(trim((string)$v));if($v!==''&&mb_strlen($v)<=50&&preg_match('/^[\pL\pN._ -]+$/u',$v))$out[]=$v;}return array_values(array_unique($out));}
 }

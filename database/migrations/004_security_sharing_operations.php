@@ -15,7 +15,8 @@ return static function(PDO $pdo,string $prefix):void{
     $spaces=$table('spaces');
     if(!$hasColumn($spaces,'homepage_page_id')){
         $pdo->exec("ALTER TABLE `{$spaces}` ADD COLUMN homepage_page_id BIGINT UNSIGNED NULL AFTER owner_id");
-        $pdo->exec("ALTER TABLE `{$spaces}` ADD CONSTRAINT fk_spaces_homepage FOREIGN KEY(homepage_page_id) REFERENCES `{$pages}`(id) ON DELETE SET NULL");
+        $fkSpacesHomepage='fk_imwiki_'.substr(hash('sha256',$prefix.'spaces_homepage'),0,24);
+        $pdo->exec("ALTER TABLE `{$spaces}` ADD CONSTRAINT `{$fkSpacesHomepage}` FOREIGN KEY(homepage_page_id) REFERENCES `{$pages}`(id) ON DELETE SET NULL");
     }
 
     $pdo->exec("CREATE TABLE IF NOT EXISTS `{$prefix}page_redirects` (

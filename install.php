@@ -8,15 +8,16 @@ use ImWiki\Security\Html;
 use ImWiki\Services\InstallerService;
 use ImWiki\Support\Url;
 
-$installer=new InstallerService(__DIR__);$lock=__DIR__.'/storage/installed.lock';$config=__DIR__.'/config/config.php';
-if(is_file($lock)||is_file($config)){
-    http_response_code(409);$complete=is_file($lock)&&is_file($config);
+$installer=new InstallerService(__DIR__);$lock=__DIR__.'/storage/installed.lock';$config=__DIR__.'/config/config.php';$step=max(1,min(6,(int)($_GET['step']??1)));
+$lockExists=is_file($lock);$configExists=is_file($config);$sameSessionResume=!$lockExists&&$configExists&&!empty($_SESSION['installer_in_progress']);$sameSessionComplete=$lockExists&&$configExists&&!empty($_SESSION['install_complete'])&&$step===6;
+if(!$sameSessionResume&&!$sameSessionComplete&&($lockExists||$configExists)){
+    http_response_code(409);$complete=$lockExists&&$configExists;
     $title=$complete?'imWiki jest już zainstalowana.':'Wykryto istniejącą lub niepełną instalację.';
-    $message=$complete?'Ponowna instalacja z publicznego instalatora jest zablokowana.':'Automatyczna reinstalacja jest zablokowana, aby nie nadpisać istniejącej konfiguracji lub danych.';
+    $message=$complete?'Ponowna instalacja z publicznego instalatora jest zablokowana.':'Konfiguracja istnieje bez blokady instalacji. Wznowienie jest dozwolone wyłącznie w tej samej sesji instalatora, aby nie nadpisać cudzej konfiguracji lub danych.';
     echo '<!doctype html><html lang="pl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>imWiki</title><link rel="stylesheet" href="public/assets/app.css"><main class="installer"><div class="card"><h1>'.Html::e($title).'</h1><p>'.Html::e($message).'</p><a class="button" href="'.Html::e(Url::to('/')).'">Otwórz imWiki</a></div></main></html>';exit;
 }
 
-$step=max(1,min(6,(int)($_GET['step']??1)));$error='';$notice='';
+$error='';$notice='';
 if($_SERVER['REQUEST_METHOD']==='POST'){
     if(!Csrf::validate($_POST['_csrf']??null)){http_response_code(419);$error='Sesja formularza wygasła. Odśwież stronę i spróbuj ponownie.';}
     elseif(isset($_POST['db_step'])){
@@ -39,14 +40,14 @@ if($_SERVER['REQUEST_METHOD']==='POST'){
         else{$_SESSION['install_admin']=$admin;header('Location: ?step=5');exit;}
     }
     elseif(isset($_POST['perform_install'])){
-        $step=5;
+        $step=5;$_SESSION['installer_in_progress']=true;
         try{
             if(!$installer->requirementsPass())throw new RuntimeException('Serwer nie spełnia wymagań krytycznych.');
             if(!isset($_SESSION['install_db'],$_SESSION['install_app'],$_SESSION['install_admin']))throw new RuntimeException('Brakuje danych wcześniejszych etapów instalacji.');
             $installer->install($_SESSION['install_db'],$_SESSION['install_app'],$_SESSION['install_admin']);
-            unset($_SESSION['install_db'],$_SESSION['install_app'],$_SESSION['install_admin']);$_SESSION['install_complete']=true;
+            unset($_SESSION['install_db'],$_SESSION['install_app'],$_SESSION['install_admin'],$_SESSION['installer_in_progress']);$_SESSION['install_complete']=true;
             header('Location: ?step=6');exit;
-        }catch(Throwable $e){$error='Instalacja nie została zakończona. Możesz poprawić konfigurację i ponowić próbę. Szczegóły techniczne zapisano w logu instalatora.';@file_put_contents(__DIR__.'/storage/logs/install.log','['.gmdate('c').'] request='.(defined('IMWIKI_REQUEST_ID')?IMWIKI_REQUEST_ID:'-').' '.get_class($e).': '.$e->getMessage()."\n",FILE_APPEND|LOCK_EX);}
+        }catch(Throwable $e){$error='Instalacja nie została zakończona. Możesz poprawić konfigurację i ponowić próbę w tej samej sesji. Szczegóły techniczne zapisano w logu instalatora.';@file_put_contents(__DIR__.'/storage/logs/install.log','['.gmdate('c').'] request='.(defined('IMWIKI_REQUEST_ID')?IMWIKI_REQUEST_ID:'-').' '.get_class($e).': '.$e->getMessage()."\n",FILE_APPEND|LOCK_EX);}
     }
 }
 

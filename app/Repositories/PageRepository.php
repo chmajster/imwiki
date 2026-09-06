@@ -16,6 +16,17 @@ final class PageRepository
         return $stmt->fetch() ?: null;
     }
 
+    public function findByUuid(string $uuid): ?array
+    {
+        $uuid=mb_strtolower(trim($uuid));if(!preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/',$uuid))return null;
+        $stmt=$this->pdo->prepare("SELECT id FROM `{$this->prefix}pages` WHERE uuid=? AND deleted_at IS NULL LIMIT 1");$stmt->execute([$uuid]);$id=$stmt->fetchColumn();return$id?$this->find((int)$id):null;
+    }
+
+    public function findIdentifier(string|int $identifier): ?array
+    {
+        if(is_int($identifier)||ctype_digit((string)$identifier))return$this->find((int)$identifier);
+        return$this->findByUuid((string)$identifier);
+    }
 
     public function findBySlug(int $spaceId,string $slug): ?array
     {
