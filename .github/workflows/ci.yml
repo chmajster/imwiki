@@ -84,16 +84,28 @@ jobs:
         run: php tests/upgrade.php
 
   release-smoke:
-    name: Final release ZIP browser smoke
+    name: Final release ZIP browser smoke (${{ matrix.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MariaDB 10.11
+            image: mariadb:10.11
+          - name: MySQL 8.0
+            image: mysql:8.0
     services:
-      mariadb:
-        image: mariadb:10.11
+      database:
+        image: ${{ matrix.image }}
         env:
           MARIADB_DATABASE: imwiki_smoke
           MARIADB_USER: imwiki
           MARIADB_PASSWORD: imwiki
           MARIADB_ROOT_PASSWORD: root
+          MYSQL_DATABASE: imwiki_smoke
+          MYSQL_USER: imwiki
+          MYSQL_PASSWORD: imwiki
+          MYSQL_ROOT_PASSWORD: root
         ports:
           - 3306:3306
         options: >-
