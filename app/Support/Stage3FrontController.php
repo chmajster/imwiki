@@ -7,6 +7,7 @@ use ImWiki\Audit\AuditService;
 use ImWiki\Auth\AuthenticationManager;
 use ImWiki\Auth\ExternalIdentityService;
 use ImWiki\Auth\OidcService;
+use ImWiki\Controllers\ApiV2Controller;
 use ImWiki\Controllers\AuthenticationAdminController;
 use ImWiki\Controllers\AuthController;
 use ImWiki\Controllers\EnterpriseAdminController;
@@ -23,6 +24,7 @@ use ImWiki\Plugins\PluginManager;
 use ImWiki\Repositories\PageRepository;
 use ImWiki\Repositories\SpaceRepository;
 use ImWiki\Repositories\UserRepository;
+use ImWiki\Search\MySqlSearchEngine;
 use ImWiki\Security\Authorization;
 use ImWiki\Security\Crypto;
 use ImWiki\Security\IpAccessPolicy;
@@ -30,14 +32,18 @@ use ImWiki\Security\RateLimiter;
 use ImWiki\Security\SecurityHeaders;
 use ImWiki\Security\SecurityPolicyService;
 use ImWiki\Security\SsrfGuard;
+use ImWiki\Services\ApiTokenService;
+use ImWiki\Services\AttachmentService;
 use ImWiki\Services\AuthService;
 use ImWiki\Services\ContentGovernanceService;
 use ImWiki\Services\EnterpriseSpaceService;
 use ImWiki\Services\HealthService;
 use ImWiki\Services\JobQueueService;
 use ImWiki\Services\NotificationService;
+use ImWiki\Services\PageService;
 use ImWiki\Services\PermissionDiagnosticsService;
 use ImWiki\Services\PropertySchemaService;
+use ImWiki\Services\SearchService;
 use ImWiki\Services\SessionService;
 use ImWiki\Services\TotpService;
 use ImWiki\Storage\StorageManager;
@@ -76,6 +82,7 @@ final class Stage3FrontController
             if($pending){
                 if(in_array($path,['/login','/login/2fa','/logout'],true)||str_starts_with($path,'/auth/oidc/'))return false;
                 if($path==='/readiness')Response::json(['status'=>'not_ready','checks'=>['database'=>true,'migrations'=>false,'storage'=>is_writable($root.'/storage')],'request_id'=>defined('IMWIKI_REQUEST_ID')?IMWIKI_REQUEST_ID:null],503);
+                if(str_starts_with($path,'/api/'))Response::json(['error'=>['code'=>'schema_upgrade_required','message'=>'Database upgrade required.','request_id'=>defined('IMWIKI_REQUEST_ID')?IMWIKI_REQUEST_ID:null]],503);
                 Response::redirect(Url::to('/upgrade.php'));
             }
 
@@ -88,6 +95,7 @@ final class Stage3FrontController
             $crypto=new Crypto((string)Config::get('app.secret',''));$authService=new AuthService($users);$limiter=new RateLimiter($root.'/storage/cache/rate-limit');$totp=new TotpService($pdo,$prefix,$crypto);$sessions=new SessionService($pdo,$prefix);$flags=new FeatureFlags($pdo,$prefix);$jobs=new JobQueueService($pdo,$prefix);$notifications=new NotificationService($pdo,$prefix,$authz,$pages,$jobs);$storage=new StorageManager($pdo,$prefix,$root);
             $authenticationManager=new AuthenticationManager($pdo,$prefix,$authService,$crypto);$identities=new ExternalIdentityService($pdo,$prefix);$oidc=new OidcService($pdo,$prefix,$crypto,new SafeHttpClient(new SsrfGuard()));
             $enterpriseSpaces=new EnterpriseSpaceService($pdo,$prefix,$authz,$flags);$governance=new ContentGovernanceService($pdo,$prefix,$pages,$authz);$schemas=new PropertySchemaService($pdo,$prefix,$authz,$pages);$audit=new AuditService($pdo,$prefix,$root);$permissionDiagnostics=new PermissionDiagnosticsService($pdo,$prefix,$authz,$users,$pages);$health=new HealthService($pdo,$prefix,$root,$migrator,$jobs,$storage);$plugins=new PluginManager($pdo,$prefix,$root,$flags);
+            $pageService=new PageService($pdo,$prefix);$attachments=new AttachmentService($pdo,$prefix,$pages,$authz,$root);$searchEngine=new MySqlSearchEngine($pdo,$prefix,$pages,$authz);$searchService=new SearchService($pdo,$prefix,$searchEngine);$apiTokens=new ApiTokenService($pdo,$prefix,$users);
 
             $auth=new AuthController($pdo,$prefix,$view,$users,$authz,$authService,$limiter,$totp,$sessions,$authenticationManager,$identities,$oidc,$flags);
             $oidcController=new OidcController($pdo,$prefix,$view,$users,$authz,$oidc,$identities,$authService,$sessions,$totp,$flags);
@@ -95,6 +103,7 @@ final class Stage3FrontController
             $pluginAdmin=new PluginAdminController($pdo,$prefix,$view,$users,$authz,$notifications,$plugins,$flags);
             $healthController=new HealthController($pdo,$prefix,$view,$users,$authz,$notifications,$health);
             $enterpriseAdmin=new EnterpriseAdminController($pdo,$prefix,$view,$users,$authz,$notifications,$enterpriseSpaces,$governance,$schemas,$storage,$jobs,$securityPolicy,$ipPolicy,$flags,$audit,$health,$permissionDiagnostics,$migrator);
+            $apiV2=new ApiV2Controller($pdo,$prefix,$apiTokens,$authz,$spaces,$pages,$pageService,$attachments,$searchService,$limiter,$audit,$flags);
 
             $router=new Router();
             $router->get('/login',[$auth,'loginForm']);$router->post('/login',[$auth,'login']);$router->get('/login/2fa',[$auth,'twoFactorForm']);$router->post('/login/2fa',[$auth,'twoFactorVerify']);$router->post('/logout',[$auth,'logout']);
@@ -103,6 +112,7 @@ final class Stage3FrontController
             $router->get('/admin/authentication',[$authenticationAdmin,'index']);$router->post('/admin/authentication/ldap',[$authenticationAdmin,'saveLdap']);$router->post('/admin/authentication/oidc',[$authenticationAdmin,'saveOidc']);$router->post('/admin/authentication/oidc-feature',[$authenticationAdmin,'toggleOidcFeature']);$router->post('/admin/authentication/providers/{key}/toggle',[$authenticationAdmin,'toggle']);
             $router->get('/admin/plugins',[$pluginAdmin,'index']);$router->post('/admin/plugins/install',[$pluginAdmin,'install']);$router->post('/admin/plugins/feature',[$pluginAdmin,'feature']);$router->post('/admin/plugins/{id}/toggle',[$pluginAdmin,'toggle']);$router->post('/admin/plugins/{id}/uninstall',[$pluginAdmin,'uninstall']);
             $router->get('/admin/enterprise',[$enterpriseAdmin,'index']);$router->post('/admin/enterprise/features',[$enterpriseAdmin,'feature']);$router->post('/admin/enterprise/categories',[$enterpriseAdmin,'createCategory']);$router->post('/admin/enterprise/spaces/lifecycle',[$enterpriseAdmin,'setSpaceLifecycle']);$router->post('/admin/enterprise/classifications',[$enterpriseAdmin,'saveClassification']);$router->post('/admin/enterprise/labels/rename',[$enterpriseAdmin,'renameLabel']);$router->post('/admin/enterprise/labels/delete',[$enterpriseAdmin,'deleteLabel']);$router->post('/admin/enterprise/ownership',[$enterpriseAdmin,'transferOwnership']);$router->post('/admin/enterprise/schemas',[$enterpriseAdmin,'createSchema']);$router->post('/admin/enterprise/security',[$enterpriseAdmin,'saveSecurity']);$router->post('/admin/enterprise/ip-rules',[$enterpriseAdmin,'addIpRule']);$router->post('/admin/enterprise/jobs/{id}/retry',[$enterpriseAdmin,'retryJob']);$router->post('/admin/enterprise/jobs/{id}/discard',[$enterpriseAdmin,'discardJob']);$router->post('/admin/enterprise/storage/verify',[$enterpriseAdmin,'verifyStorage']);$router->post('/admin/enterprise/storage/orphan',[$enterpriseAdmin,'cleanupOrphan']);$router->get('/admin/enterprise/audit/export',[$enterpriseAdmin,'auditExport']);
+            $router->get('/api/v2/spaces',[$apiV2,'spaces']);$router->get('/api/v2/pages/{id}',[$apiV2,'page']);$router->post('/api/v2/pages',[$apiV2,'createPage']);$router->put('/api/v2/pages/{id}',[$apiV2,'updatePage']);$router->get('/api/v2/search',[$apiV2,'search']);$router->post('/api/v2/pages/{id}/attachments',[$apiV2,'uploadAttachment']);
 
             $router->dispatch($request);return true;
         }catch(Throwable $e){
