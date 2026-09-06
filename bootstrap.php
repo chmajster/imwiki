@@ -45,6 +45,10 @@ if (isset($_SESSION['user_id'])) {
         session_regenerate_id(true);
     } else {
         $_SESSION['last_seen_at'] = $now;
+        $lastRegenerated = (int)($_SESSION['session_regenerated_at'] ?? $_SESSION['authenticated_at'] ?? $now);
+        if (($now - $lastRegenerated) >= 900 && session_regenerate_id(true)) {
+            $_SESSION['session_regenerated_at'] = $now;
+        }
     }
 }
 
