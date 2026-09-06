@@ -4,6 +4,7 @@ declare(strict_types=1);
 use ImWiki\Security\SecurityHeaders;
 use ImWiki\Support\Autoloader;
 use ImWiki\Support\Config;
+use ImWiki\Support\Stage3FrontController;
 use ImWiki\Support\Url;
 
 require_once __DIR__ . '/app/Support/Autoloader.php';
@@ -53,3 +54,11 @@ SecurityHeaders::send([
     'hsts' => false,
     'csp_report_only' => false,
 ]);
+
+// Stage 3 augments selected enterprise/auth/health routes while the proven Stage 2
+// front controller remains responsible for the rest of the application.
+if (Stage3FrontController::shouldHandle()) {
+    if (Stage3FrontController::handle(__DIR__)) {
+        exit;
+    }
+}
