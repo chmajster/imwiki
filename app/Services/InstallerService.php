@@ -9,185 +9,43 @@ use PDO;
 
 final class InstallerService
 {
-    public function __construct(private readonly string $root) {}
+    public function __construct(private readonly string $root){}
 
-    public function requirements(): array
+    public function requirements():array
     {
-        $requiredExtensions = ['pdo','pdo_mysql','mbstring','json','openssl','fileinfo','session','zip'];
-        $checks = [
-            ['PHP >= 8.2', version_compare(PHP_VERSION, '8.2.0', '>='), true, PHP_VERSION],
-        ];
-        foreach ($requiredExtensions as $ext) {
-            $loaded = extension_loaded($ext);
-            $checks[] = ['Rozszerzenie ' . $ext, $loaded, true, $loaded ? 'OK' : 'Brak'];
-        }
-        foreach (['random_bytes','password_hash','hash_hmac','json_encode','session_start','finfo_open'] as $function) {
-            $available = function_exists($function);
-            $checks[] = ['Funkcja ' . $function, $available, true, $available ? 'OK' : 'Brak'];
-        }
-        foreach (['config','storage','storage/logs','storage/private','storage/uploads','storage/cache'] as $dir) {
-            $path = $this->root . '/' . $dir;
-            if (!is_dir($path)) @mkdir($path, 0770, true);
-            $writable = is_dir($path) && is_writable($path);
-            $checks[] = ['Zapis: ' . $dir, $writable, true, $writable ? 'OK' : 'Brak zapisu'];
-        }
-        $sessionCookies = filter_var(ini_get('session.use_cookies'), FILTER_VALIDATE_BOOL);
-        $checks[] = ['Obsługa cookies sesji', $sessionCookies, true, $sessionCookies ? 'OK' : 'Wyłączona'];
-        $checks[] = ['Session cookies HttpOnly', (bool) ini_get('session.cookie_httponly'), false, ini_get('session.cookie_httponly') ? 'OK' : 'Aplikacja wymusi HttpOnly'];
-        $checks[] = ['Maksymalny upload', true, false, (string)(ini_get('upload_max_filesize') ?: 'nieznany')];
-        $checks[] = ['Limit POST', true, false, (string)(ini_get('post_max_size') ?: 'nieznany')];
-        $checks[] = ['PHP ZipArchive', class_exists(\ZipArchive::class), true, class_exists(\ZipArchive::class) ? 'Dostępny' : 'Brak'];
-        if (function_exists('apache_get_modules')) {
-            $rewrite = in_array('mod_rewrite', apache_get_modules(), true);
-            $checks[] = ['Apache mod_rewrite', $rewrite, false, $rewrite ? 'Dostępny' : 'Niewykryty — clean URLs mogą wymagać konfiguracji hostingu'];
-        } else {
-            $checks[] = ['Clean URL diagnostics', true, false, 'Nie można wykryć modułów serwera — routing ma fallback przez index.php'];
-        }
-        return $checks;
+        $requiredExtensions=['pdo','pdo_mysql','mbstring','json','openssl','fileinfo','session','zip'];$checks=[['PHP >= 8.2',version_compare(PHP_VERSION,'8.2.0','>='),true,PHP_VERSION]];
+        foreach($requiredExtensions as $ext){$loaded=extension_loaded($ext);$checks[]=['Rozszerzenie '.$ext,$loaded,true,$loaded?'OK':'Brak'];}
+        foreach(['random_bytes','password_hash','hash_hmac','json_encode','session_start','finfo_open','openssl_verify'] as $function){$available=function_exists($function);$checks[]=['Funkcja '.$function,$available,true,$available?'OK':'Brak'];}
+        foreach(['config','storage','storage/logs','storage/private','storage/uploads','storage/cache','storage/backups','storage/plugins'] as $dir){$path=$this->root.'/'.$dir;if(!is_dir($path))@mkdir($path,0770,true);$writable=is_dir($path)&&is_writable($path);$checks[]=['Zapis: '.$dir,$writable,true,$writable?'OK':'Brak zapisu'];}
+        $sessionCookies=filter_var(ini_get('session.use_cookies'),FILTER_VALIDATE_BOOL);$checks[]=['Obsługa cookies sesji',$sessionCookies,true,$sessionCookies?'OK':'Wyłączona'];$checks[]=['Session cookies HttpOnly',(bool)ini_get('session.cookie_httponly'),false,ini_get('session.cookie_httponly')?'OK':'Aplikacja wymusi HttpOnly'];$checks[]=['Maksymalny upload',true,false,(string)(ini_get('upload_max_filesize')?:'nieznany')];$checks[]=['Limit POST',true,false,(string)(ini_get('post_max_size')?:'nieznany')];$checks[]=['PHP ZipArchive',class_exists(\ZipArchive::class),true,class_exists(\ZipArchive::class)?'Dostępny':'Brak'];
+        if(function_exists('apache_get_modules')){$rewrite=in_array('mod_rewrite',apache_get_modules(),true);$checks[]=['Apache mod_rewrite',$rewrite,false,$rewrite?'Dostępny':'Niewykryty — clean URLs mogą wymagać konfiguracji hostingu'];}else$checks[]=['Clean URL diagnostics',true,false,'Nie można wykryć modułów serwera — routing ma fallback przez index.php'];
+        $checks[]=['LDAP (opcjonalne)',true,false,extension_loaded('ldap')?'Dostępne':'Brak — logowanie LDAP pozostanie wyłączone'];return$checks;
+    }
+    public function requirementsPass():bool{foreach($this->requirements() as $check)if($check[2]&&!$check[1])return false;return true;}
+
+    public function testDatabase(array $db):array
+    {
+        try{$pdo=Connection::create($db);$version=(string)$pdo->query('SELECT VERSION()')->fetchColumn();$charset=$pdo->query("SHOW CHARACTER SET LIKE 'utf8mb4'")->fetch();if(!$charset)return[false,'Serwer bazy nie udostępnia wymaganego kodowania utf8mb4.'];$pdo->query("SELECT CONVERT('Zażółć 😀' USING utf8mb4)")->fetchColumn();return[true,'Połączenie poprawne. Serwer: '.$version.'; utf8mb4: OK'];}catch(\Throwable){return[false,'Nie można połączyć się z bazą. Sprawdź host, port, nazwę bazy, użytkownika i uprawnienia.'];}
     }
 
-    public function requirementsPass(): bool
+    public function install(array $db,array $app,array $admin):void
     {
-        foreach ($this->requirements() as $check) {
-            if ($check[2] && !$check[1]) return false;
-        }
-        return true;
+        if(is_file($this->root.'/storage/installed.lock'))throw new \RuntimeException('imWiki jest już zainstalowana.');$prefix=preg_replace('/[^a-zA-Z0-9_]/','',(string)($db['prefix']??''))??'';$db['prefix']=$prefix;$pdo=Connection::create($db);(new Migrator($pdo,$this->root.'/database/migrations',$prefix))->migrate();$pdo->beginTransaction();try{$this->seedSystem($pdo,$prefix,$app,$admin);$pdo->commit();}catch(\Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw$e;}
+        $secret=bin2hex(random_bytes(32));$config=['app'=>['installed'=>true,'name'=>$app['site_name'],'url'=>rtrim($app['app_url'],'/'),'base_path'=>parse_url($app['app_url'],PHP_URL_PATH)?:'','secret'=>$secret,'language'=>$app['language'],'timezone'=>$app['timezone'],'debug'=>false],'db'=>$db];$export="<?php\ndeclare(strict_types=1);\n\nreturn ".var_export($config,true).";\n";$configPath=$this->root.'/config/config.php';if(@file_put_contents($configPath,$export,LOCK_EX)===false)throw new \RuntimeException('Nie udało się zapisać konfiguracji.');@chmod($configPath,0640);if(@file_put_contents($this->root.'/storage/installed.lock','installed='.gmdate('c')."\nversion=".(defined('IMWIKI_VERSION')?IMWIKI_VERSION:'unknown')."\n",LOCK_EX)===false){@unlink($configPath);throw new \RuntimeException('Nie udało się utworzyć blokady instalacji.');}@chmod($this->root.'/storage/installed.lock',0640);
     }
 
-    public function testDatabase(array $db): array
+    private function seedSystem(PDO $pdo,string $prefix,array $app,array $admin):void
     {
-        try {
-            $pdo = Connection::create($db);
-            $version = (string)$pdo->query('SELECT VERSION()')->fetchColumn();
-            $charset = $pdo->query("SHOW CHARACTER SET LIKE 'utf8mb4'")->fetch();
-            if (!$charset) return [false, 'Serwer bazy nie udostępnia wymaganego kodowania utf8mb4.'];
-            $pdo->query("SELECT CONVERT('Zażółć 😀' USING utf8mb4)")->fetchColumn();
-            return [true, 'Połączenie poprawne. Serwer: ' . $version . '; utf8mb4: OK'];
-        } catch (\Throwable) {
-            return [false, 'Nie można połączyć się z bazą. Sprawdź host, port, nazwę bazy, użytkownika i uprawnienia.'];
-        }
+        $now=gmdate('Y-m-d H:i:s');$legacyPermissions=['administration.access','users.manage','groups.manage','spaces.create','spaces.manage'];foreach($legacyPermissions as $permission){$stmt=$pdo->prepare("INSERT IGNORE INTO `{$prefix}permissions` (name,created_at) VALUES (?,?)");$stmt->execute([$permission,$now]);}
+        $roles=['administrator'=>'Administrator','super_administrator'=>'Super Administrator','wiki-administrator'=>'Wiki Administrator','editor'=>'Editor','user'=>'User'];foreach($roles as $name=>$label){$stmt=$pdo->prepare("INSERT IGNORE INTO `{$prefix}roles` (name,label,created_at) VALUES (?,?,?)");$stmt->execute([$name,$label,$now]);}
+        foreach(['administrators','wiki-admins','editors','users'] as $group){$stmt=$pdo->prepare("INSERT INTO `{$prefix}groups` (name,label,system,created_at,updated_at) VALUES (?,?,1,?,?) ON DUPLICATE KEY UPDATE system=1,label=VALUES(label),updated_at=VALUES(updated_at)");$stmt->execute([$group,ucwords(str_replace('-',' ',$group)),$now,$now]);}
+        $adminRole=(int)$pdo->query("SELECT id FROM `{$prefix}roles` WHERE name='administrator'")->fetchColumn();$superRole=(int)$pdo->query("SELECT id FROM `{$prefix}roles` WHERE name='super_administrator'")->fetchColumn();$permIds=$pdo->query("SELECT id FROM `{$prefix}permissions`")->fetchAll(PDO::FETCH_COLUMN);foreach([$adminRole,$superRole] as $roleId)foreach($permIds as $permId)$pdo->prepare("INSERT IGNORE INTO `{$prefix}role_permissions` (role_id,permission_id) VALUES (?,?)")->execute([$roleId,(int)$permId]);
+        $email=mb_strtolower(trim($admin['email']));$username=trim($admin['username']);$find=$pdo->prepare("SELECT id FROM `{$prefix}users` WHERE username=? OR email=? LIMIT 1");$find->execute([$username,$email]);$adminId=(int)($find->fetchColumn()?:0);if($adminId===0){$stmt=$pdo->prepare("INSERT INTO `{$prefix}users` (username,first_name,last_name,email,password_hash,status,language,timezone,created_at,updated_at) VALUES (?,?,?,?,?,'active',?,?,?,?)");$stmt->execute([$username,trim($admin['first_name']),trim($admin['last_name']),$email,password_hash($admin['password'],PASSWORD_DEFAULT),$app['language'],$app['timezone'],$now,$now]);$adminId=(int)$pdo->lastInsertId();}
+        foreach([$adminRole,$superRole] as $roleId)$pdo->prepare("INSERT IGNORE INTO `{$prefix}user_roles` (user_id,role_id) VALUES (?,?)")->execute([$adminId,$roleId]);$groupId=(int)$pdo->query("SELECT id FROM `{$prefix}groups` WHERE name='administrators'")->fetchColumn();$pdo->prepare("INSERT IGNORE INTO `{$prefix}group_users` (group_id,user_id) VALUES (?,?)")->execute([$groupId,$adminId]);
+        $settings=['site.name'=>$app['site_name'],'site.language'=>$app['language'],'site.timezone'=>$app['timezone'],'site.registration'=>'0','site.max_upload'=>'10485760'];foreach($settings as $key=>$value){$stmt=$pdo->prepare("INSERT INTO `{$prefix}settings` (setting_key,setting_value,is_secret,updated_at) VALUES (?,?,0,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_at=VALUES(updated_at)");$stmt->execute([$key,$value,$now]);}
+        $classificationId=(int)($pdo->query("SELECT id FROM `{$prefix}classifications` WHERE classification_key='internal' LIMIT 1")->fetchColumn()?:0);$spaceStmt=$pdo->prepare("SELECT id FROM `{$prefix}spaces` WHERE space_key='WELCOME' LIMIT 1");$spaceStmt->execute();$spaceId=(int)($spaceStmt->fetchColumn()?:0);if($spaceId===0){$stmt=$pdo->prepare("INSERT INTO `{$prefix}spaces` (name,space_key,description,owner_id,visibility,lifecycle,default_classification_id,created_at,updated_at) VALUES ('Witaj','WELCOME','Domyślna przestrzeń imWiki',?,'logged_in','active',?, ?,?)");$stmt->execute([$adminId,$classificationId?:null,$now,$now]);$spaceId=(int)$pdo->lastInsertId();}
+        $pageFind=$pdo->prepare("SELECT id FROM `{$prefix}pages` WHERE space_id=? AND slug='witaj-w-imwiki' AND deleted_at IS NULL LIMIT 1");$pageFind->execute([$spaceId]);if(!$pageFind->fetchColumn()){$content='<h1>Witaj w imWiki</h1><p>Utwórz Space, dodaj stronę, edytuj jej treść i użyj wyszukiwarki, aby szybko odnaleźć dokumentację.</p>';$uuid=$this->uuid();$stmt=$pdo->prepare("INSERT INTO `{$prefix}pages` (uuid,space_id,title,slug,content,status,restriction_mode,classification_id,version_no,author_id,last_editor_id,owner_id,created_at,updated_at) VALUES (?,?,'Witaj w imWiki','witaj-w-imwiki',?,'published','inherited',?,1,?,?,?,?,?)");$stmt->execute([$uuid,$spaceId,$content,$classificationId?:null,$adminId,$adminId,$adminId,$now,$now]);$pageId=(int)$pdo->lastInsertId();$stmt=$pdo->prepare("INSERT INTO `{$prefix}page_versions` (page_id,version_no,title,content,author_id,change_comment,created_at) VALUES (?,1,'Witaj w imWiki',?,?,'Pierwsza wersja',?)");$stmt->execute([$pageId,$content,$adminId,$now]);}
+        $templates=['Blank Page'=>'<p></p>','Meeting Notes'=>'<h1>Meeting Notes</h1><h2>Agenda</h2><ul><li></li></ul><h2>Decisions</h2><p></p><h2>Action items</h2><p>{{task-list}}</p>','Documentation'=>'<h1>Overview</h1><h2>Details</h2><p></p>','How-To'=>'<h1>How-To</h1><ol><li></li></ol>','Decision'=>'<h1>Decision</h1><h2>Status</h2><p>Proposed</p><h2>Owner</h2><p></p><h2>Context</h2><p></p><h2>Alternatives</h2><p></p><h2>Decision</h2><p></p><h2>Consequences</h2><p></p>','Project Page'=>'<h1>Project</h1><h2>Goals</h2><p></p><h2>Status</h2><p></p>'];foreach($templates as $name=>$content){$stmt=$pdo->prepare("INSERT INTO `{$prefix}templates` (name,content,is_system,created_at,updated_at) SELECT ?,?,1,?,? WHERE NOT EXISTS (SELECT 1 FROM `{$prefix}templates` WHERE name=?)");$stmt->execute([$name,$content,$now,$now,$name]);}
     }
-
-    public function install(array $db, array $app, array $admin): void
-    {
-        if (is_file($this->root . '/storage/installed.lock')) {
-            throw new \RuntimeException('imWiki jest już zainstalowana.');
-        }
-        $prefix = preg_replace('/[^a-zA-Z0-9_]/', '', (string)($db['prefix'] ?? '')) ?? '';
-        $db['prefix'] = $prefix;
-        $pdo = Connection::create($db);
-        (new Migrator($pdo, $this->root . '/database/migrations', $prefix))->migrate();
-
-        $pdo->beginTransaction();
-        try {
-            $this->seedSystem($pdo, $prefix, $app, $admin);
-            $pdo->commit();
-        } catch (\Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            throw $e;
-        }
-
-        $secret = bin2hex(random_bytes(32));
-        $config = [
-            'app' => [
-                'installed' => true,
-                'name' => $app['site_name'],
-                'url' => rtrim($app['app_url'], '/'),
-                'base_path' => parse_url($app['app_url'], PHP_URL_PATH) ?: '',
-                'secret' => $secret,
-                'language' => $app['language'],
-                'timezone' => $app['timezone'],
-                'debug' => false,
-            ],
-            'db' => $db,
-        ];
-        $export = "<?php\ndeclare(strict_types=1);\n\nreturn " . var_export($config, true) . ";\n";
-        $configPath = $this->root . '/config/config.php';
-        if (@file_put_contents($configPath, $export, LOCK_EX) === false) {
-            throw new \RuntimeException('Nie udało się zapisać konfiguracji.');
-        }
-        @chmod($configPath, 0640);
-        if (@file_put_contents($this->root . '/storage/installed.lock', 'installed=' . gmdate('c') . "\n", LOCK_EX) === false) {
-            @unlink($configPath);
-            throw new \RuntimeException('Nie udało się utworzyć blokady instalacji.');
-        }
-        @chmod($this->root . '/storage/installed.lock', 0640);
-    }
-
-    private function seedSystem(PDO $pdo, string $prefix, array $app, array $admin): void
-    {
-        $now = gmdate('Y-m-d H:i:s');
-        $permissions = ['administration.access','users.manage','groups.manage','spaces.create','spaces.manage'];
-        foreach ($permissions as $permission) {
-            $stmt = $pdo->prepare("INSERT IGNORE INTO `{$prefix}permissions` (name,created_at) VALUES (?,?)");
-            $stmt->execute([$permission,$now]);
-        }
-        $roles = ['administrator'=>'Administrator','wiki-administrator'=>'Wiki Administrator','editor'=>'Editor','user'=>'User'];
-        foreach ($roles as $name=>$label) {
-            $stmt = $pdo->prepare("INSERT IGNORE INTO `{$prefix}roles` (name,label,created_at) VALUES (?,?,?)");
-            $stmt->execute([$name,$label,$now]);
-        }
-        foreach (['administrators','wiki-admins','editors','users'] as $group) {
-            $stmt = $pdo->prepare("INSERT IGNORE INTO `{$prefix}groups` (name,label,created_at,updated_at) VALUES (?,?,?,?)");
-            $stmt->execute([$group,ucwords(str_replace('-',' ',$group)),$now,$now]);
-        }
-        $adminRole = (int)$pdo->query("SELECT id FROM `{$prefix}roles` WHERE name='administrator'")->fetchColumn();
-        $permIds = $pdo->query("SELECT id FROM `{$prefix}permissions`")->fetchAll(PDO::FETCH_COLUMN);
-        foreach ($permIds as $permId) {
-            $stmt = $pdo->prepare("INSERT IGNORE INTO `{$prefix}role_permissions` (role_id,permission_id) VALUES (?,?)");
-            $stmt->execute([$adminRole,(int)$permId]);
-        }
-        $email = mb_strtolower(trim($admin['email']));
-        $username = trim($admin['username']);
-        $find = $pdo->prepare("SELECT id FROM `{$prefix}users` WHERE username=? OR email=? LIMIT 1");
-        $find->execute([$username,$email]);
-        $adminId = (int)($find->fetchColumn() ?: 0);
-        if ($adminId === 0) {
-            $stmt = $pdo->prepare("INSERT INTO `{$prefix}users` (username,first_name,last_name,email,password_hash,status,language,timezone,created_at,updated_at) VALUES (?,?,?,?,?,'active',?,?,?,?)");
-            $stmt->execute([$username,trim($admin['first_name']),trim($admin['last_name']),$email,password_hash($admin['password'], PASSWORD_DEFAULT),$app['language'],$app['timezone'],$now,$now]);
-            $adminId = (int)$pdo->lastInsertId();
-        }
-        $stmt = $pdo->prepare("INSERT IGNORE INTO `{$prefix}user_roles` (user_id,role_id) VALUES (?,?)");
-        $stmt->execute([$adminId,$adminRole]);
-        $groupId = (int)$pdo->query("SELECT id FROM `{$prefix}groups` WHERE name='administrators'")->fetchColumn();
-        $stmt = $pdo->prepare("INSERT IGNORE INTO `{$prefix}group_users` (group_id,user_id) VALUES (?,?)");
-        $stmt->execute([$groupId,$adminId]);
-
-        $settings = [
-            'site.name'=>$app['site_name'], 'site.language'=>$app['language'], 'site.timezone'=>$app['timezone'],
-            'site.registration'=>'0', 'site.max_upload'=>'10485760'
-        ];
-        foreach ($settings as $key=>$value) {
-            $stmt = $pdo->prepare("INSERT INTO `{$prefix}settings` (setting_key,setting_value,is_secret,updated_at) VALUES (?,?,0,?) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_at=VALUES(updated_at)");
-            $stmt->execute([$key,$value,$now]);
-        }
-
-        $spaceStmt = $pdo->prepare("SELECT id FROM `{$prefix}spaces` WHERE space_key='WELCOME' LIMIT 1");
-        $spaceStmt->execute();
-        $spaceId = (int)($spaceStmt->fetchColumn() ?: 0);
-        if ($spaceId === 0) {
-            $stmt = $pdo->prepare("INSERT INTO `{$prefix}spaces` (name,space_key,description,owner_id,visibility,created_at,updated_at) VALUES ('Witaj','WELCOME','Domyślna przestrzeń imWiki',?,'logged_in',?,?)");
-            $stmt->execute([$adminId,$now,$now]);
-            $spaceId = (int)$pdo->lastInsertId();
-        }
-        $pageFind = $pdo->prepare("SELECT id FROM `{$prefix}pages` WHERE space_id=? AND slug='witaj-w-imwiki' AND deleted_at IS NULL LIMIT 1");
-        $pageFind->execute([$spaceId]);
-        if (!$pageFind->fetchColumn()) {
-            $content = '<h1>Witaj w imWiki</h1><p>Utwórz Space, dodaj stronę, edytuj jej treść i użyj wyszukiwarki, aby szybko odnaleźć dokumentację.</p>';
-            $stmt = $pdo->prepare("INSERT INTO `{$prefix}pages` (space_id,title,slug,content,status,restriction_mode,version_no,author_id,last_editor_id,owner_id,created_at,updated_at) VALUES (?,'Witaj w imWiki','witaj-w-imwiki',?,'published','inherited',1,?,?,?,?,?)");
-            $stmt->execute([$spaceId,$content,$adminId,$adminId,$adminId,$now,$now]);
-            $pageId = (int)$pdo->lastInsertId();
-            $stmt = $pdo->prepare("INSERT INTO `{$prefix}page_versions` (page_id,version_no,title,content,author_id,change_comment,created_at) VALUES (?,1,'Witaj w imWiki',?,?,'Pierwsza wersja',?)");
-            $stmt->execute([$pageId,$content,$adminId,$now]);
-        }
-        $templates = [
-            'Blank Page'=>'<p></p>', 'Meeting Notes'=>'<h1>Meeting Notes</h1><h2>Agenda</h2><ul><li></li></ul><h2>Decisions</h2><p></p>',
-            'Documentation'=>'<h1>Overview</h1><h2>Details</h2><p></p>', 'How-To'=>'<h1>How-To</h1><ol><li></li></ol>',
-            'Decision'=>'<h1>Decision</h1><h2>Context</h2><p></p><h2>Decision</h2><p></p>', 'Project Page'=>'<h1>Project</h1><h2>Goals</h2><p></p><h2>Status</h2><p></p>'
-        ];
-        foreach ($templates as $name=>$content) {
-            $stmt = $pdo->prepare("INSERT INTO `{$prefix}templates` (name,content,is_system,created_at,updated_at) SELECT ?,?,1,?,? WHERE NOT EXISTS (SELECT 1 FROM `{$prefix}templates` WHERE name=?)");
-            $stmt->execute([$name,$content,$now,$now,$name]);
-        }
-    }
+    private function uuid():string{$d=random_bytes(16);$d[6]=chr((ord($d[6])&0x0f)|0x40);$d[8]=chr((ord($d[8])&0x3f)|0x80);$h=bin2hex($d);return substr($h,0,8).'-'.substr($h,8,4).'-'.substr($h,12,4).'-'.substr($h,16,4).'-'.substr($h,20);}
 }
