@@ -1,0 +1,47 @@
+<?php
+declare(strict_types=1);
+$docroot=$argv[1]??throw new RuntimeException('docroot');
+$base=rtrim($argv[2]??throw new RuntimeException('base'),'/');
+$adminPassword=(string)getenv('SMOKE_ADMIN_PASSWORD');
+if($adminPassword==='')throw new RuntimeException('SMOKE_ADMIN_PASSWORD required');
+$cookie=tempnam(sys_get_temp_dir(),'imwiki-smoke-');
+register_shutdown_function(static fn()=>@unlink((string)$cookie));
+$http=static function(string $url,string $method='GET',array $data=[],bool $follow=true)use($cookie):array{
+ $ch=curl_init($url);
+ curl_setopt_array($ch,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_HEADER=>true,CURLOPT_FOLLOWLOCATION=>$follow,CURLOPT_MAXREDIRS=>8,CURLOPT_COOKIEJAR=>$cookie,CURLOPT_COOKIEFILE=>$cookie,CURLOPT_CONNECTTIMEOUT=>5,CURLOPT_TIMEOUT=>30]);
+ if($method==='POST'){curl_setopt($ch,CURLOPT_POST,true);curl_setopt($ch,CURLOPT_POSTFIELDS,http_build_query($data));}
+ $raw=curl_exec($ch);if($raw===false)throw new RuntimeException(curl_error($ch));
+ $status=(int)curl_getinfo($ch,CURLINFO_RESPONSE_CODE);$hs=(int)curl_getinfo($ch,CURLINFO_HEADER_SIZE);curl_close($ch);
+ return ['status'=>$status,'body'=>substr((string)$raw,$hs)];
+};
+$csrf=static function(string $body):string{if(!preg_match('/name="_csrf"\s+value="([^"]+)"/',$body,$m))throw new RuntimeException('CSRF missing');return html_entity_decode($m[1],ENT_QUOTES|ENT_HTML5,'UTF-8');};
+$assert=static function(bool $ok,string $message):void{if(!$ok)throw new RuntimeException($message);};
+$assert(is_file($docroot.'/install.php')&&!is_file($docroot.'/config/config.php')&&!is_file($docroot.'/storage/installed.lock'),'Initial release state');
+$r=$http($base.'/install.php?step=2');
+$r=$http($base.'/install.php?step=2','POST',['_csrf'=>$csrf($r['body']),'db_step'=>'1','host'=>getenv('SMOKE_DB_HOST'),'port'=>getenv('SMOKE_DB_PORT'),'database'=>getenv('SMOKE_DB_NAME'),'username'=>getenv('SMOKE_DB_USER'),'password'=>getenv('SMOKE_DB_PASS'),'prefix'=>'']);
+$assert(str_contains($r['body'],'Krok 3 z 6'),'DB step');
+$r=$http($base.'/install.php?step=3','POST',['_csrf'=>$csrf($r['body']),'site_settings'=>'1','site_name'=>'imWiki Release Smoke','app_url'=>$base,'language'=>'pl','timezone'=>'Europe/Warsaw']);
+$assert(str_contains($r['body'],'Krok 4 z 6'),'Site step');
+$r=$http($base.'/install.php?step=4','POST',['_csrf'=>$csrf($r['body']),'administrator'=>'1','email'=>'release-smoke@example.invalid','admin_username'=>'release_admin','first_name'=>'Release','last_name'=>'Admin','admin_password'=>$adminPassword,'admin_password_repeat'=>$adminPassword]);
+$assert(str_contains($r['body'],'Krok 5 z 6'),'Admin step');
+$r=$http($base.'/install.php?step=5','POST',['_csrf'=>$csrf($r['body']),'perform_install'=>'1']);
+$assert(str_contains($r['body'],'Krok 6 z 6'),'Install step');
+$assert(is_file($docroot.'/config/config.php')&&is_file($docroot.'/storage/installed.lock'),'Install artifacts');
+$r=$http($base.'/install.php?step=1','GET',[],false);$assert($r['status']===409,'Installer lock');
+$r=$http($base.'/health');$assert($r['status']===200&&str_contains($r['body'],'"status":"ok"'),'Health');
+$r=$http($base.'/readiness');$assert($r['status']===200&&str_contains($r['body'],'"status":"ready"'),'Readiness');
+$r=$http($base.'/login');
+$r=$http($base.'/login','POST',['_csrf'=>$csrf($r['body']),'provider'=>'local','login'=>'release_admin','password'=>$adminPassword]);
+$assert($r['status']===200,'Login');
+$r=$http($base.'/spaces');
+$r=$http($base.'/spaces','POST',['_csrf'=>$csrf($r['body']),'name'=>'Release Smoke Space','key'=>'SMOKE','description'=>'Release ZIP test']);
+$assert(str_contains($r['body'],'Release Smoke Space'),'Space create');
+$r=$http($base.'/spaces/SMOKE/pages/create');
+$r=$http($base.'/spaces/SMOKE/pages/create','POST',['_csrf'=>$csrf($r['body']),'title'=>'Release Artifact Page','content'=>'<h1>Release Artifact Page</h1><p>Browser-only installation verified.</p>','parent_id'=>'0','template_id'=>'0']);
+$assert(str_contains($r['body'],'Release Artifact Page'),'Page create');
+$r=$http($base.'/admin/enterprise');$assert($r['status']===200&&str_contains($r['body'],'Enterprise Administration'),'Enterprise UI');
+$pdo=new PDO('mysql:host='.getenv('SMOKE_DB_HOST').';port='.getenv('SMOKE_DB_PORT').';dbname='.getenv('SMPOKE_DB_NAME').';charset=utf8mb4',getenv('SMOKE_DB_USER'),getenv('SMOKE_DB_PASS'),[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);
+$uuid=$pdo->query("SELECT uuid FROM pages WHERE title='Release Artifact Page' LIMIT 1")->fetchColumn();
+$assert(is_string($uuid)&&preg_match('/^[0-9a-f-]{36}$/i',$uuid)===1,'UUID');
+$assert((int)$pdo->query('SELECT COUNT(*) FROM migrations')->fetchColumn()>=10,'Migrations');
+echo "RELEASE_ARTIFACT_SMOKE_OK\n";
