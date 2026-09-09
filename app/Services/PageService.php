@@ -14,6 +14,7 @@ final class PageService
         private readonly string $prefix='',
         private readonly ?MentionService $mentions=null,
         private readonly ?EventDispatcher $events=null,
+        private readonly ?WorkflowService $workflow=null,
     ) {}
 
     public function create(int $spaceId, ?int $parentId, string $title, string $content, int $userId): int
@@ -23,16 +24,17 @@ final class PageService
         if ($parentId !== null && !$this->belongsToSpace($parentId, $spaceId)) throw new \InvalidArgumentException('Nieprawidłowa strona nadrzędna.');
         $slug = $this->uniqueSlug($spaceId, $title);
         $safe = Html::sanitizeRichText($content);
+        $status = $this->workflow?->enabled() ? 'draft' : 'published';
         $this->pdo->beginTransaction();
         try {
-            $stmt = $this->pdo->prepare("INSERT INTO `{$this->prefix}pages` (space_id,parent_id,title,slug,content,status,restriction_mode,version_no,author_id,last_editor_id,owner_id,created_at,updated_at) VALUES (?,?,?,?,?,'published','inherited',1,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
-            $stmt->execute([$spaceId,$parentId,$title,$slug,$safe,$userId,$userId,$userId]);
+            $stmt = $this->pdo->prepare("INSERT INTO `{$this->prefix}pages` (space_id,parent_id,title,slug,content,status,restriction_mode,version_no,author_id,last_editor_id,owner_id,created_at,updated_at) VALUES (?,?,?,?,?,?,'inherited',1,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
+            $stmt->execute([$spaceId,$parentId,$title,$slug,$safe,$status,$userId,$userId,$userId]);
             $id = (int)$this->pdo->lastInsertId();
             $ver = $this->pdo->prepare("INSERT INTO `{$this->prefix}page_versions` (page_id,version_no,title,content,properties_json,author_id,change_comment,created_at) VALUES (?,1,?,?,JSON_ARRAY(),?,'Utworzenie strony',UTC_TIMESTAMP())");
             $ver->execute([$id,$title,$safe,$userId]);
             $this->activity($userId,'page.created','page',$id,'Utworzono stronę: '.$title);
             $this->mentions?->process($safe,$userId,$id,'page',$id,'page:'.$id.':v1','/pages/'.$id);
-            $this->events?->dispatch('page.created',['actor_id'=>$userId,'page_id'=>$id,'space_id'=>$spaceId,'title'=>$title,'url'=>'/pages/'.$id]);
+            $this->events?->dispatch('page.created',['actor_id'=>$userId,'page_id'=>$id,'space_id'=>$spaceId,'title'=>$title,'url'=>'/pages/'.$id,'status'=>$status]);
             $this->pdo->commit();
             return $id;
         } catch (\Throwable $e) {
