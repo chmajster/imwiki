@@ -43,7 +43,10 @@ final class RestApiController
 
     public function search(Request $request):never
     {
-        $auth=$this->auth($request,'pages:read');$uid=(int)$auth['user_id'];$q=trim((string)$request->input('q',''));$items=[];foreach($this->pages->search($q,50) as $row){$page=$this->pages->find((int)$row['id']);if($page&&$this->authz->canViewPage($uid,$page))$items[]=['id'=>(int)$row['id'],'title'=>$row['title'],'space'=>$row['space_name'],'space_key'=>$row['space_key'],'score'=>(float)$row['score']];}Response::json(['query'=>$q,'items'=>$items]);
+        $auth=$this->auth($request,'pages:read');$uid=(int)$auth['user_id'];$q=trim((string)$request->input('q',''));
+        $rows=$this->pages->searchVisible($q,$uid,$this->authz->isAdmin($uid),50);
+        $items=array_map(static fn(array $row):array=>['id'=>(int)$row['id'],'title'=>$row['title'],'space'=>$row['space_name'],'space_key'=>$row['space_key'],'score'=>(float)$row['score']],$rows);
+        Response::json(['query'=>$q,'items'=>$items]);
     }
 
     public function uploadAttachment(Request $request,array $params):never
