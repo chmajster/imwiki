@@ -20,7 +20,7 @@ $expected = [
     'GET /attachments/{id}' => ['/api/v1/attachments/{id}', 'attachments:read'],
 ];
 
-$index = (string)file_get_contents($root . '/index.php');
+$routeSource = (string)file_get_contents($root . '/app/Bootstrap/RouteRegistrar.php');
 foreach ($expected as $operation => [$route, $scope]) {
     [$method, $path] = explode(' ', $operation, 2);
     $node = $spec['paths'][$path][strtolower($method)] ?? null;
@@ -35,7 +35,7 @@ foreach ($expected as $operation => [$route, $scope]) {
     }
     $routerMethod = strtolower($method);
     $needle = '$router->' . $routerMethod . "('" . $route . "'";
-    if (!str_contains($index, $needle)) {
+    if (!str_contains($routeSource, $needle)) {
         throw new RuntimeException('Router/OpenAPI drift: ' . $operation . ' -> ' . $route);
     }
 }
@@ -51,6 +51,11 @@ foreach (array_unique(array_column($expected, 1)) as $scope) {
     if (!str_contains($tokenService, "'" . $scope . "'")) {
         throw new RuntimeException('OpenAPI references unknown token scope: ' . $scope);
     }
+}
+
+$index = (string)file_get_contents($root . '/index.php');
+if (!str_contains($index, 'new Application(__DIR__)') || strlen($index) > 1500) {
+    throw new RuntimeException('index.php is no longer a minimal front controller.');
 }
 
 echo "OPENAPI_CONTRACT_OK\n";
