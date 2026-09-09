@@ -33,7 +33,7 @@ if($daemon)set_time_limit(0);
 
 do{
     $started=microtime(true);
-    try{$done=$runner->run($limit);$status=['ok'=>true,'processed'=>count($done),'ids'=>$done,'pending'=>$jobs->pendingCount(),'failed'=>$jobs->failedCount(),'duration_ms'=>(int)((microtime(true)-$started)*1000)];echo json_encode($status,JSON_UNESCAPED_SLASHES).PHP_EOL;}
+    try{$done=$runner->run($limit,true);$status=['ok'=>true,'processed'=>count($done),'ids'=>$done,'pending'=>$jobs->pendingCount(),'failed'=>$jobs->failedCount(),'duration_ms'=>(int)((microtime(true)-$started)*1000)];echo json_encode($status,JSON_UNESCAPED_SLASHES).PHP_EOL;}
     catch(Throwable $e){fwrite(STDERR,json_encode(['ok'=>false,'error'=>get_class($e),'message'=>$e->getMessage()],JSON_UNESCAPED_SLASHES).PHP_EOL);if(!$daemon)exit(1);$done=[];}
     if($daemon&&count($done)===0)sleep($sleep);
 }while($daemon);
