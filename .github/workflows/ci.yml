@@ -48,6 +48,9 @@ jobs:
       - name: Backup integrity and tamper detection
         env: *db-env
         run: php tests/backup_integrity.php
+      - name: Asynchronous backup lifecycle
+        env: *db-env
+        run: php tests/async_backup.php
       - name: Browser-installer service smoke
         env: *db-env
         run: php tests/install_smoke.php
