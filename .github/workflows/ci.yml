@@ -40,6 +40,9 @@ jobs:
       - name: Security integration invariants
         env: *db-env
         run: php tests/security_integration.php
+      - name: Reliability integration invariants
+        env: *db-env
+        run: php tests/reliability_integration.php
       - name: Browser-installer service smoke
         env: *db-env
         run: php tests/install_smoke.php
