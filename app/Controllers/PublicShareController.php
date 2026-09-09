@@ -8,6 +8,7 @@ use ImWiki\Http\Response;
 use ImWiki\Repositories\PageRepository;
 use ImWiki\Repositories\UserRepository;
 use ImWiki\Security\Authorization;
+use ImWiki\Security\RateLimiter;
 use ImWiki\Services\NotificationService;
 use ImWiki\Services\PublicShareService;
 use ImWiki\Support\Url;
@@ -17,7 +18,9 @@ use Throwable;
 
 final class PublicShareController extends BaseController
 {
-    public function __construct(PDO $pdo,string $prefix,View $view,UserRepository $users,Authorization $authz,?NotificationService $notifications,private readonly PageRepository $pages,private readonly PublicShareService $shares){parent::__construct($pdo,$prefix,$view,$users,$authz,$notifications);}
+    private readonly RateLimiter $shareLimiter;
+
+    public function __construct(PDO $pdo,string $prefix,View $view,UserRepository $users,Authorization $authz,?NotificationService $notifications,private readonly PageRepository $pages,private readonly PublicShareService $shares,?RateLimiter $shareLimiter=null){parent::__construct($pdo,$prefix,$view,$users,$authz,$notifications);$this->shareLimiter=$shareLimiter??new RateLimiter(dirname(__DIR__,2).'/storage/cache/rate-limit');}
 
     public function manage(Request $request,array $params):void
     {
@@ -35,7 +38,7 @@ final class PublicShareController extends BaseController
             $share=$this->shares->create((int)$page['id'],$uid,trim((string)$request->input('expires_at'))?:null,(string)$request->input('password'));
             $share['url']=Url::to('/share/'.$share['token']);$_SESSION['new_public_share']=$share;
             $this->audit($request,'share.public_created','page',(int)$page['id'],'Utworzono publiczny link do strony','security','warning',['share_id'=>$share['id'],'expires_at'=>$share['expires_at']]);
-        }catch(Throwable){$_SESSION['new_public_share']=['error'=>'Nie udało się utworzyć publicznego linku. Sprawdź, czy administrator włączył Public sharing.'];}
+        }catch(Throwable $e){$_SESSION['new_public_share']=['error'=>$e->getMessage()!==''?$e->getMessage():'Nie udało się utworzyć publicznego linku.'];}
         Response::redirect(Url::to('/pages/'.$page['id'].'/public-shares'));
     }
 
@@ -57,8 +60,12 @@ final class PublicShareController extends BaseController
         if($protected&&!($_SESSION[$key]??false)){
             if($request->method()==='POST'){
                 $this->csrf($request);
-                if($this->shares->verifyPassword($share,(string)$request->input('password'))){$_SESSION[$key]=true;Response::redirect(Url::to('/share/'.$token));}
-                $error='Nieprawidłowe hasło.';
+                $limitKey='public-share-password:'.(int)$share['id'].':'.$request->ip();
+                if($this->shareLimiter->tooManyAttempts($limitKey,10,900)){
+                    http_response_code(429);$error='Zbyt wiele prób hasła. Spróbuj ponownie później.';
+                }elseif($this->shares->verifyPassword($share,(string)$request->input('password'))){
+                    $_SESSION[$key]=true;Response::redirect(Url::to('/share/'.$token));
+                }else{$error='Nieprawidłowe hasło.';}
             }
             echo $this->view->render('public/password.php',['share'=>$share,'token'=>$token,'error'=>$error,'requestId'=>defined('IMWIKI_REQUEST_ID')?IMWIKI_REQUEST_ID:'']);return;
         }
