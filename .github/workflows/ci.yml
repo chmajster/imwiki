@@ -29,6 +29,8 @@ jobs:
         run: find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -n1 php -l
       - name: Unit and security tests
         run: php tests/run.php
+      - name: OpenAPI contract
+        run: php tests/openapi_contract.php
       - name: Fresh migration install
         env: &db-env
           TEST_DB_HOST: 127.0.0.1
@@ -43,6 +45,9 @@ jobs:
       - name: Reliability integration invariants
         env: *db-env
         run: php tests/reliability_integration.php
+      - name: Backup integrity and tamper detection
+        env: *db-env
+        run: php tests/backup_integrity.php
       - name: Browser-installer service smoke
         env: *db-env
         run: php tests/install_smoke.php
