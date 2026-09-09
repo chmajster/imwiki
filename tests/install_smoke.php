@@ -24,6 +24,7 @@ try{
     $adminId=(int)$pdo->query("SELECT id FROM users WHERE username='admin-ci' AND status='active'")->fetchColumn();if($adminId<=0)throw new RuntimeException('Installer did not create administrator.');
     $isAdmin=(int)$pdo->query("SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.user_id={$adminId} AND r.name='administrator'")->fetchColumn();if($isAdmin!==1)throw new RuntimeException('Installer administrator role is missing.');
     if((int)$pdo->query("SELECT COUNT(*) FROM spaces WHERE space_key='WELCOME'")->fetchColumn()!==1)throw new RuntimeException('WELCOME space missing.');
-    if((int)$pdo->query("SELECT COUNT(*) FROM migrations")->fetchColumn()<8)throw new RuntimeException('Not all migrations were installed.');
+    if((int)$pdo->query("SELECT COUNT(*) FROM migrations")->fetchColumn()<9)throw new RuntimeException('Not all migrations were installed.');
+    if((int)$pdo->query("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=DATABASE() AND table_name='backup_artifacts'")->fetchColumn()!==1)throw new RuntimeException('Async backup schema missing.');
     echo "INSTALL_SMOKE_OK\n";
 }finally{@unlink($configPath);@unlink($lockPath);}
