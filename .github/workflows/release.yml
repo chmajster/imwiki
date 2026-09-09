@@ -5,18 +5,68 @@ on:
     tags:
       - 'v*'
 permissions:
-  contents: read
+  contents: write
+
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_DATABASE: imwiki_test
+          MARIADB_USER: imwiki
+          MARIADB_PASSWORD: imwiki
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      TEST_DB_HOST: 127.0.0.1
+      TEST_DB_PORT: 3306
+      TEST_DB_NAME: imwiki_test
+      TEST_DB_USER: imwiki
+      TEST_DB_PASS: imwiki
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install PHP extensions
+        run: sudo apt-get update && sudo apt-get install -y php8.3-mysql php8.3-mbstring php8.3-xml php8.3-zip
+      - name: PHP syntax
+        run: find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -n1 php -l
+      - name: Unit and security tests
+        run: php tests/run.php
+      - name: Migration and security integration
+        run: |
+          php tests/fresh_install.php
+          php tests/security_integration.php
+          php tests/install_smoke.php
+          php tests/upgrade_smoke.php
+      - name: JavaScript syntax
+        run: node --check public/assets/app.js
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Read version
+      - name: Read and validate version
         id: version
-        run: echo "version=$(php -r \"require 'bootstrap.php'; echo IMWIKI_VERSION;\")" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n ' < VERSION)"
+          test -n "$version"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match VERSION=${version}" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Build production package
         run: |
           set -euo pipefail
+          rm -rf /tmp/imwiki /tmp/package-smoke
           mkdir -p /tmp/imwiki
           rsync -a ./ /tmp/imwiki/ \
             --exclude='.git/' --exclude='.github/' --exclude='tests/' \
@@ -25,7 +75,36 @@ jobs:
             --exclude='storage/private/*' --exclude='storage/uploads/*'
           cd /tmp/imwiki
           zip -qr "$GITHUB_WORKSPACE/imwiki-${{ steps.version.outputs.version }}.zip" .
+      - name: Smoke-test generated ZIP
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/package-smoke
+          unzip -q "imwiki-${{ steps.version.outputs.version }}.zip" -d /tmp/package-smoke
+          test -f /tmp/package-smoke/VERSION
+          test -f /tmp/package-smoke/install.php
+          test -f /tmp/package-smoke/bin/worker.php
+          test ! -e /tmp/package-smoke/tests
+          test ! -e /tmp/package-smoke/config/config.php
+          find /tmp/package-smoke -name '*.php' -print0 | xargs -0 -n1 php -l >/dev/null
+      - name: Create SHA-256 checksum
+        run: sha256sum "imwiki-${{ steps.version.outputs.version }}.zip" > "imwiki-${{ steps.version.outputs.version }}.zip.sha256"
       - uses: actions/upload-artifact@v4
         with:
           name: imwiki-${{ steps.version.outputs.version }}
-          path: imwiki-${{ steps.version.outputs.version }}.zip
+          path: |
+            imwiki-${{ steps.version.outputs.version }}.zip
+            imwiki-${{ steps.version.outputs.version }}.zip.sha256
+      - name: Publish GitHub Release assets
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          zip="imwiki-${{ steps.version.outputs.version }}.zip"
+          checksum="${zip}.sha256"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$zip" "$checksum" --clobber
+          else
+            gh release create "$tag" "$zip" "$checksum" --verify-tag --generate-notes --title "imWiki ${{ steps.version.outputs.version }}"
+          fi
