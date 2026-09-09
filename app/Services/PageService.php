@@ -24,7 +24,7 @@ final class PageService
         if ($parentId !== null && !$this->belongsToSpace($parentId, $spaceId)) throw new \InvalidArgumentException('Nieprawidłowa strona nadrzędna.');
         $slug = $this->uniqueSlug($spaceId, $title);
         $safe = Html::sanitizeRichText($content);
-        $status = $this->workflow?->enabled() ? 'draft' : 'published';
+        $status = ($this->workflow?->enabled() ?? $this->workflowEnabled()) ? 'draft' : 'published';
         $this->pdo->beginTransaction();
         try {
             $stmt = $this->pdo->prepare("INSERT INTO `{$this->prefix}pages` (space_id,parent_id,title,slug,content,status,restriction_mode,version_no,author_id,last_editor_id,owner_id,created_at,updated_at) VALUES (?,?,?,?,?,?,'inherited',1,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
@@ -137,6 +137,13 @@ final class PageService
         $stmt=$this->pdo->prepare("SELECT property_key,label,property_type,value_text,value_number,value_date,value_user_id,value_boolean,options_json FROM `{$this->prefix}page_properties` WHERE page_id=? ORDER BY property_key");
         $stmt->execute([$pageId]);
         return json_encode($stmt->fetchAll(),JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)?:'[]';
+    }
+
+    private function workflowEnabled():bool
+    {
+        $stmt=$this->pdo->prepare("SELECT setting_value FROM `{$this->prefix}settings` WHERE setting_key='workflow.status_enabled' LIMIT 1");
+        $stmt->execute();
+        return (string)($stmt->fetchColumn()?:'0')==='1';
     }
 
     private function activity(int $userId,string $action,string $type,int $id,string $description): void
