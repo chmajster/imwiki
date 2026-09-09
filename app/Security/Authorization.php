@@ -8,34 +8,48 @@ use PDO;
 
 final class Authorization
 {
+    private array $adminCache=[];
+    private array $permissionCache=[];
+    private array $spaceViewCache=[];
+    private array $spaceManageCache=[];
+    private array $spacePermissionCache=[];
+    private array $pagePermissionCache=[];
+    private array $spaceArchivedCache=[];
+
     public function __construct(private readonly PDO $pdo, private readonly UserRepository $users, private readonly string $prefix='') {}
 
     public function isAdmin(int $userId): bool
     {
-        return in_array('administrator', $this->users->roles($userId), true);
+        return $this->adminCache[$userId] ??= in_array('administrator', $this->users->roles($userId), true);
     }
 
     public function can(int $userId, string $permission): bool
     {
-        return $this->isAdmin($userId) || in_array($permission, $this->users->permissions($userId), true);
+        if($this->isAdmin($userId))return true;
+        if(!isset($this->permissionCache[$userId]))$this->permissionCache[$userId]=array_fill_keys($this->users->permissions($userId),true);
+        return isset($this->permissionCache[$userId][$permission]);
     }
 
     public function canViewSpace(int $userId, int $spaceId): bool
     {
-        if ($this->isAdmin($userId)) return true;
+        $key=$userId.':'.$spaceId;
+        if(array_key_exists($key,$this->spaceViewCache))return $this->spaceViewCache[$key];
+        if ($this->isAdmin($userId)) return $this->spaceViewCache[$key]=true;
         $stmt = $this->pdo->prepare("SELECT s.visibility,s.owner_id, MAX(COALESCE(sp.can_view,0)) can_view FROM `{$this->prefix}spaces` s LEFT JOIN `{$this->prefix}space_permissions` sp ON sp.space_id=s.id AND ((sp.subject_type='user' AND sp.subject_id=?) OR (sp.subject_type='group' AND sp.subject_id IN (SELECT gu.group_id FROM `{$this->prefix}group_users` gu WHERE gu.user_id=?))) WHERE s.id=? AND s.deleted_at IS NULL GROUP BY s.id,s.visibility,s.owner_id");
         $stmt->execute([$userId,$userId,$spaceId]);
         $row = $stmt->fetch();
-        return (bool)($row && ($row['visibility']==='logged_in' || (int)$row['owner_id']===$userId || (int)$row['can_view']===1));
+        return $this->spaceViewCache[$key]=(bool)($row && ($row['visibility']==='logged_in' || (int)$row['owner_id']===$userId || (int)$row['can_view']===1));
     }
 
     public function canManageSpace(int $userId, int $spaceId): bool
     {
-        if ($this->isAdmin($userId) || $this->can($userId, 'spaces.manage')) return true;
+        $key=$userId.':'.$spaceId;
+        if(array_key_exists($key,$this->spaceManageCache))return $this->spaceManageCache[$key];
+        if ($this->isAdmin($userId) || $this->can($userId, 'spaces.manage')) return $this->spaceManageCache[$key]=true;
         $stmt = $this->pdo->prepare("SELECT owner_id FROM `{$this->prefix}spaces` WHERE id=? AND deleted_at IS NULL");
         $stmt->execute([$spaceId]);
-        if ((int)$stmt->fetchColumn() === $userId) return true;
-        return $this->spacePermission($userId, $spaceId, 'can_manage');
+        if ((int)$stmt->fetchColumn() === $userId) return $this->spaceManageCache[$key]=true;
+        return $this->spaceManageCache[$key]=$this->spacePermission($userId, $spaceId, 'can_manage');
     }
 
     public function canCreatePage(int $userId, int $spaceId): bool
@@ -53,13 +67,8 @@ final class Authorization
         $mode = (string)($page['restriction_mode'] ?? 'inherited');
         $ownerId = (int)($page['owner_id'] ?? $page['author_id'] ?? 0);
 
-        if ($mode === 'private') {
-            return $ownerId === $userId;
-        }
-        if ($mode === 'specific') {
-            return $ownerId === $userId || $this->pagePermission($userId, (int)$page['id'], 'can_view');
-        }
-
+        if ($mode === 'private') return $ownerId === $userId;
+        if ($mode === 'specific') return $ownerId === $userId || $this->pagePermission($userId, (int)$page['id'], 'can_view');
         return $this->canViewSpace($userId, (int)$page['space_id']);
     }
 
@@ -67,12 +76,10 @@ final class Authorization
     {
         if (($page['status'] ?? '') === 'archived') return false;
         if ($this->isAdmin($userId) || $this->can($userId, 'spaces.manage')) return true;
-
         $mode = (string)($page['restriction_mode'] ?? 'inherited');
         $ownerId = (int)($page['owner_id'] ?? $page['author_id'] ?? 0);
         if ($mode === 'private') return $ownerId === $userId;
         if ($mode === 'specific') return $ownerId === $userId || $this->pagePermission($userId, (int)$page['id'], 'can_edit');
-
         if (!$this->canViewSpace($userId, (int)$page['space_id'])) return false;
         if ($this->canManageSpace($userId, (int)$page['space_id'])) return true;
         return $this->spacePermission($userId, (int)$page['space_id'], 'can_edit_page');
@@ -93,12 +100,10 @@ final class Authorization
         if (($page['status'] ?? '') === 'archived') return false;
         if ($this->isAdmin($userId)) return true;
         if (!$this->canViewPage($userId, $page)) return false;
-
         $mode = (string)($page['restriction_mode'] ?? 'inherited');
         $ownerId = (int)($page['owner_id'] ?? $page['author_id'] ?? 0);
         if ($mode === 'private') return $ownerId === $userId;
         if ($mode === 'specific') return $ownerId === $userId || $this->pagePermission($userId, (int)$page['id'], 'can_comment') || $this->pagePermission($userId, (int)$page['id'], 'can_edit');
-
         if ($this->canManageSpace($userId, (int)$page['space_id'])) return true;
         return $this->spacePermission($userId, (int)$page['space_id'], 'can_comment');
     }
@@ -108,12 +113,10 @@ final class Authorization
         if (($page['status'] ?? '') === 'archived') return false;
         if ($this->isAdmin($userId)) return true;
         if (!$this->canViewPage($userId, $page)) return false;
-
         $mode = (string)($page['restriction_mode'] ?? 'inherited');
         $ownerId = (int)($page['owner_id'] ?? $page['author_id'] ?? 0);
         if ($mode === 'private') return $ownerId === $userId;
         if ($mode === 'specific') return $ownerId === $userId || $this->pagePermission($userId, (int)$page['id'], 'can_edit');
-
         if ($this->canManageSpace($userId, (int)$page['space_id'])) return true;
         return $this->spacePermission($userId, (int)$page['space_id'], 'can_attachments') || $this->spacePermission($userId, (int)$page['space_id'], 'can_edit_page');
     }
@@ -128,24 +131,29 @@ final class Authorization
     {
         $allowed=['can_view','can_edit','can_delete','can_comment'];
         if (!in_array($column,$allowed,true)) return false;
+        $key=$userId.':'.$pageId.':'.$column;
+        if(array_key_exists($key,$this->pagePermissionCache))return $this->pagePermissionCache[$key];
         $stmt=$this->pdo->prepare("SELECT MAX({$column}) FROM `{$this->prefix}page_permissions` WHERE page_id=? AND ((subject_type='user' AND subject_id=?) OR (subject_type='group' AND subject_id IN (SELECT group_id FROM `{$this->prefix}group_users` WHERE user_id=?)))");
         $stmt->execute([$pageId,$userId,$userId]);
-        return (int)($stmt->fetchColumn() ?: 0) === 1;
+        return $this->pagePermissionCache[$key]=(int)($stmt->fetchColumn() ?: 0) === 1;
     }
 
     private function spacePermission(int $userId, int $spaceId, string $column): bool
     {
         $allowed=['can_view','can_create_page','can_edit_page','can_delete_page','can_manage','can_attachments','can_comment'];
         if (!in_array($column,$allowed,true)) return false;
+        $key=$userId.':'.$spaceId.':'.$column;
+        if(array_key_exists($key,$this->spacePermissionCache))return $this->spacePermissionCache[$key];
         $stmt=$this->pdo->prepare("SELECT MAX({$column}) FROM `{$this->prefix}space_permissions` WHERE space_id=? AND ((subject_type='user' AND subject_id=?) OR (subject_type='group' AND subject_id IN (SELECT group_id FROM `{$this->prefix}group_users` WHERE user_id=?)))");
         $stmt->execute([$spaceId,$userId,$userId]);
-        return (int)($stmt->fetchColumn() ?: 0) === 1;
+        return $this->spacePermissionCache[$key]=(int)($stmt->fetchColumn() ?: 0) === 1;
     }
 
     private function spaceArchived(int $spaceId): bool
     {
+        if(array_key_exists($spaceId,$this->spaceArchivedCache))return $this->spaceArchivedCache[$spaceId];
         $stmt = $this->pdo->prepare("SELECT archived_at IS NOT NULL FROM `{$this->prefix}spaces` WHERE id=? AND deleted_at IS NULL");
         $stmt->execute([$spaceId]);
-        return (bool)$stmt->fetchColumn();
+        return $this->spaceArchivedCache[$spaceId]=(bool)$stmt->fetchColumn();
     }
 }
