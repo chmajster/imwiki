@@ -53,4 +53,4 @@ $title=$title??'imWiki';$notificationCount=(int)($notificationCount??0);$isAdmin
   </nav>
 </header>
 <?php endif; ?>
-<main class="app-shell"><?=$content?></main><script src="<?=Html::e(Url::to('/public/assets/app.js'))?>" defer></script></body></html>
+<main class="app-shell"><?=$content?></main><script type="module" src="<?=Html::e(Url::to('/public/assets/app.js'))?>"></script></body></html>
