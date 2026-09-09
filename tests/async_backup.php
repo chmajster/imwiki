@@ -59,8 +59,13 @@ try{
     $users=new UserRepository($pdo,'');$pages=new PageRepository($pdo,'');$authz=new Authorization($pdo,$users,'');$crypto=new Crypto(str_repeat('s',64));
     $notifications=new NotificationService($pdo,'',$authz,$pages,$jobs);$mail=new MailService($pdo,'',$crypto,new SmtpClient());$webhooks=new WebhookService($pdo,'',$authz,$crypto,new SsrfGuard(),$jobs);
     $runner=new JobRunner($jobs,$mail,$crypto,$webhooks,$notifications,$artifacts);
-    $done=$runner->run(1);
-    if(count($done)!==1)throw new RuntimeException('Worker did not process queued backup job.');
+
+    if($runner->run(1)!==[])throw new RuntimeException('Lightweight web runner processed a heavy backup job.');
+    $stillQueued=$pdo->query("SELECT status FROM jobs WHERE id=".(int)$job['id'])->fetchColumn();
+    if($stillQueued!=='pending')throw new RuntimeException('Web runner changed backup job state.');
+
+    $done=$runner->run(1,true);
+    if(count($done)!==1)throw new RuntimeException('CLI worker did not process queued backup job.');
 
     $ready=$pdo->query("SELECT * FROM backup_artifacts WHERE id={$artifactId}")->fetch();
     if(!$ready||$ready['status']!=='ready'||!preg_match('/^[a-f0-9]{48}\.zip$/',(string)$ready['stored_name']))throw new RuntimeException('Backup artifact did not become ready.');
@@ -75,7 +80,7 @@ try{
     $artifacts->retry($retryId,$uid);
     $retryState=$pdo->query("SELECT status FROM backup_artifacts WHERE id={$retryId}")->fetchColumn();
     if($retryState!=='queued')throw new RuntimeException('Failed backup was not re-queued.');
-    if(count($runner->run(1))!==1)throw new RuntimeException('Retry job was not processed.');
+    if(count($runner->run(1,true))!==1)throw new RuntimeException('Retry job was not processed.');
     $retryReady=$artifacts->resolveReady($retryId);
     if(!$retryReady)throw new RuntimeException('Retried backup did not become ready.');
     $createdFiles[]=(string)$retryReady['path'];
@@ -90,7 +95,7 @@ try{
     $routes=(string)file_get_contents($root.'/app/Bootstrap/RouteRegistrar.php');
     foreach(["/admin/backup/{id}/download","/admin/backup/{id}/retry"] as $route){if(!str_contains($routes,$route))throw new RuntimeException('Async backup route missing: '.$route);}
     $worker=(string)file_get_contents($root.'/bin/worker.php');
-    if(!str_contains($worker,'BackupArtifactService')||!str_contains($worker,'$backupArtifacts'))throw new RuntimeException('CLI worker is not wired for backup jobs.');
+    if(!str_contains($worker,'BackupArtifactService')||!str_contains($worker,'run($limit,true)'))throw new RuntimeException('CLI worker is not wired for heavy backup jobs.');
 
     echo "ASYNC_BACKUP_OK\n";
 }finally{
