@@ -13,11 +13,12 @@ final class JobRunner
         private readonly Crypto $crypto,
         private readonly WebhookService $webhooks,
         private readonly NotificationService $notifications,
+        private readonly ?BackupArtifactService $backups=null,
     ){}
 
     public function run(int $limit=50):array
     {
-        return $this->jobs->process($limit,[
+        $handlers=[
             'email'=>fn(array $p)=>$this->mail->send((string)$p['to'],(string)$p['subject'],(string)$p['html'],(string)$p['text']),
             'encrypted_email'=>function(array $p):void{
                 $data=json_decode($this->crypto->decrypt((string)($p['envelope']??'')),true,512,JSON_THROW_ON_ERROR);
@@ -32,6 +33,8 @@ final class JobRunner
                 if($message)$this->mail->send($message['to'],$message['subject'],$message['html'],$message['text']);
             },
             'webhook'=>fn(array $p)=>$this->webhooks->deliver($p),
-        ]);
+        ];
+        if($this->backups)$handlers['backup']=fn(array $p)=>$this->backups->process((int)($p['artifact_id']??0));
+        return $this->jobs->process($limit,$handlers);
     }
 }
