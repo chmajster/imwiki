@@ -29,13 +29,35 @@ jobs:
         run: find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -n1 php -l
       - name: Unit and security tests
         run: php tests/run.php
+      - name: OpenAPI contract
+        run: php tests/openapi_contract.php
       - name: Fresh migration install
-        env:
+        env: &db-env
           TEST_DB_HOST: 127.0.0.1
           TEST_DB_PORT: 3306
           TEST_DB_NAME: imwiki_test
           TEST_DB_USER: imwiki
           TEST_DB_PASS: imwiki
         run: php tests/fresh_install.php
+      - name: Security integration invariants
+        env: *db-env
+        run: php tests/security_integration.php
+      - name: Reliability integration invariants
+        env: *db-env
+        run: php tests/reliability_integration.php
+      - name: Backup integrity and tamper detection
+        env: *db-env
+        run: php tests/backup_integrity.php
+      - name: Asynchronous backup lifecycle
+        env: *db-env
+        run: php tests/async_backup.php
+      - name: Browser-installer service smoke
+        env: *db-env
+        run: php tests/install_smoke.php
+      - name: Incremental upgrade and retry smoke
+        env: *db-env
+        run: php tests/upgrade_smoke.php
       - name: JavaScript syntax
-        run: node --check public/assets/app.js
+        run: find public/assets -name '*.js' -print0 | xargs -0 -n1 node --check
+      - name: Deprecated editor API guard
+        run: '! grep -R "document\.execCommand" public/assets --include="*.js"'

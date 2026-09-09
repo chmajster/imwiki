@@ -9,7 +9,9 @@ require_once __DIR__ . '/app/Support/Autoloader.php';
 Autoloader::register(__DIR__);
 Config::load(__DIR__ . '/config/config.php');
 
-define('IMWIKI_VERSION', '0.2.0');
+$versionFile=__DIR__.'/VERSION';
+$version=is_file($versionFile)?trim((string)file_get_contents($versionFile)):'';
+define('IMWIKI_VERSION', $version!==''?$version:'0.0.0');
 if (!defined('IMWIKI_REQUEST_ID')) {
     define('IMWIKI_REQUEST_ID', bin2hex(random_bytes(8)));
 }

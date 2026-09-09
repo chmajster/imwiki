@@ -14,6 +14,8 @@ final class PageService
         private readonly string $prefix='',
         private readonly ?MentionService $mentions=null,
         private readonly ?EventDispatcher $events=null,
+        private readonly ?WorkflowService $workflow=null,
+        private readonly ?SlugService $slugService=null,
     ) {}
 
     public function create(int $spaceId, ?int $parentId, string $title, string $content, int $userId): int
@@ -21,18 +23,19 @@ final class PageService
         $title = trim($title);
         if ($title === '') throw new \InvalidArgumentException('Tytuł jest wymagany.');
         if ($parentId !== null && !$this->belongsToSpace($parentId, $spaceId)) throw new \InvalidArgumentException('Nieprawidłowa strona nadrzędna.');
-        $slug = $this->uniqueSlug($spaceId, $title);
+        $slug = $this->slugs()->unique($spaceId, $title);
         $safe = Html::sanitizeRichText($content);
+        $status = ($this->workflow?->enabled() ?? $this->workflowEnabled()) ? 'draft' : 'published';
         $this->pdo->beginTransaction();
         try {
-            $stmt = $this->pdo->prepare("INSERT INTO `{$this->prefix}pages` (space_id,parent_id,title,slug,content,status,restriction_mode,version_no,author_id,last_editor_id,owner_id,created_at,updated_at) VALUES (?,?,?,?,?,'published','inherited',1,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
-            $stmt->execute([$spaceId,$parentId,$title,$slug,$safe,$userId,$userId,$userId]);
+            $stmt = $this->pdo->prepare("INSERT INTO `{$this->prefix}pages` (space_id,parent_id,title,slug,content,status,restriction_mode,version_no,author_id,last_editor_id,owner_id,created_at,updated_at) VALUES (?,?,?,?,?,?,'inherited',1,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
+            $stmt->execute([$spaceId,$parentId,$title,$slug,$safe,$status,$userId,$userId,$userId]);
             $id = (int)$this->pdo->lastInsertId();
             $ver = $this->pdo->prepare("INSERT INTO `{$this->prefix}page_versions` (page_id,version_no,title,content,properties_json,author_id,change_comment,created_at) VALUES (?,1,?,?,JSON_ARRAY(),?,'Utworzenie strony',UTC_TIMESTAMP())");
             $ver->execute([$id,$title,$safe,$userId]);
             $this->activity($userId,'page.created','page',$id,'Utworzono stronę: '.$title);
             $this->mentions?->process($safe,$userId,$id,'page',$id,'page:'.$id.':v1','/pages/'.$id);
-            $this->events?->dispatch('page.created',['actor_id'=>$userId,'page_id'=>$id,'space_id'=>$spaceId,'title'=>$title,'url'=>'/pages/'.$id]);
+            $this->events?->dispatch('page.created',['actor_id'=>$userId,'page_id'=>$id,'space_id'=>$spaceId,'title'=>$title,'url'=>'/pages/'.$id,'status'=>$status]);
             $this->pdo->commit();
             return $id;
         } catch (\Throwable $e) {
@@ -54,11 +57,11 @@ final class PageService
             $this->assertValidParent($pageId,(int)$page['space_id'],$parentId);
             $newVersion = $baseVersion + 1;
             $safe = Html::sanitizeRichText($content);
-            $newSlug = $this->slugify($title);
+            $newSlug = $this->slugs()->slugify($title);
             if ($newSlug !== $page['slug']) {
                 $redirect = $this->pdo->prepare("INSERT IGNORE INTO `{$this->prefix}page_redirects` (page_id,space_id,old_slug,created_at) VALUES (?,?,?,UTC_TIMESTAMP())");
                 $redirect->execute([$pageId,(int)$page['space_id'],$page['slug']]);
-                $newSlug = $this->uniqueSlug((int)$page['space_id'],$title,$pageId);
+                $newSlug = $this->slugs()->unique((int)$page['space_id'],$title,$pageId);
             }
             $upd = $this->pdo->prepare("UPDATE `{$this->prefix}pages` SET parent_id=?,title=?,slug=?,content=?,version_no=?,last_editor_id=?,updated_at=UTC_TIMESTAMP() WHERE id=?");
             $upd->execute([$parentId,$title,$newSlug,$safe,$newVersion,$userId,$pageId]);
@@ -78,13 +81,65 @@ final class PageService
 
     public function restore(int $pageId, int $version, int $userId): int
     {
-        $stmt = $this->pdo->prepare("SELECT * FROM `{$this->prefix}page_versions` WHERE page_id=? AND version_no=?");
-        $stmt->execute([$pageId,$version]);
-        $old = $stmt->fetch();
-        if (!$old) throw new \RuntimeException('Wersja nie istnieje.');
-        $cur = $this->pdo->prepare("SELECT version_no,parent_id FROM `{$this->prefix}pages` WHERE id=? AND deleted_at IS NULL");
-        $cur->execute([$pageId]);$current=$cur->fetch();if(!$current)throw new \RuntimeException('Strona nie istnieje.');
-        return $this->update($pageId,(string)$old['title'],(string)$old['content'],(int)$current['version_no'],$current['parent_id']!==null?(int)$current['parent_id']:null,$userId,'Przywrócenie wersji '.$version);
+        $stmt=$this->pdo->prepare("SELECT * FROM `{$this->prefix}page_versions` WHERE page_id=? AND version_no=?");
+        $stmt->execute([$pageId,$version]);$old=$stmt->fetch();
+        if(!$old)throw new \RuntimeException('Wersja nie istnieje.');
+
+        $this->pdo->beginTransaction();
+        try{
+            $cur=$this->pdo->prepare("SELECT * FROM `{$this->prefix}pages` WHERE id=? AND deleted_at IS NULL FOR UPDATE");
+            $cur->execute([$pageId]);$page=$cur->fetch();
+            if(!$page)throw new \RuntimeException('Strona nie istnieje.');
+
+            $title=trim((string)$old['title']);
+            $safe=Html::sanitizeRichText((string)$old['content']);
+            $newVersion=(int)$page['version_no']+1;
+            $newSlug=$this->slugs()->slugify($title);
+            if($newSlug!==$page['slug']){
+                $this->pdo->prepare("INSERT IGNORE INTO `{$this->prefix}page_redirects` (page_id,space_id,old_slug,created_at) VALUES (?,?,?,UTC_TIMESTAMP())")->execute([$pageId,(int)$page['space_id'],$page['slug']]);
+                $newSlug=$this->slugs()->unique((int)$page['space_id'],$title,$pageId);
+            }
+
+            $properties=$this->restoreProperties($pageId,(string)($old['properties_json']??'[]'),$userId);
+            $upd=$this->pdo->prepare("UPDATE `{$this->prefix}pages` SET title=?,slug=?,content=?,version_no=?,last_editor_id=?,updated_at=UTC_TIMESTAMP() WHERE id=?");
+            $upd->execute([$title,$newSlug,$safe,$newVersion,$userId,$pageId]);
+            $ver=$this->pdo->prepare("INSERT INTO `{$this->prefix}page_versions` (page_id,version_no,title,content,properties_json,author_id,change_comment,created_at) VALUES (?,?,?,?,?,?,?,UTC_TIMESTAMP())");
+            $ver->execute([$pageId,$newVersion,$title,$safe,$properties,$userId,'Przywrócenie wersji '.$version]);
+            $this->activity($userId,'page.restored','page',$pageId,'Przywrócono wersję '.$version.': '.$title);
+            $this->mentions?->process($safe,$userId,$pageId,'page',$pageId,'page:'.$pageId.':v'.$newVersion,'/pages/'.$pageId);
+            $this->events?->dispatch('page.updated',['actor_id'=>$userId,'page_id'=>$pageId,'space_id'=>(int)$page['space_id'],'title'=>$title,'url'=>'/pages/'.$pageId,'version'=>$newVersion,'restored_from'=>$version]);
+            $this->pdo->commit();
+            return $newVersion;
+        }catch(\Throwable $e){
+            if($this->pdo->inTransaction())$this->pdo->rollBack();
+            throw $e;
+        }
+    }
+
+    private function restoreProperties(int $pageId,string $json,int $userId):string
+    {
+        $rows=json_decode($json,true);if(!is_array($rows))$rows=[];
+        $this->pdo->prepare("DELETE FROM `{$this->prefix}page_properties` WHERE page_id=?")->execute([$pageId]);
+        $insert=$this->pdo->prepare("INSERT INTO `{$this->prefix}page_properties` (page_id,property_key,label,property_type,value_text,value_number,value_date,value_user_id,value_boolean,options_json,updated_by,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP())");
+        $normalized=[];$allowed=['text','number','date','select','user','boolean'];
+        foreach($rows as $row){
+            if(!is_array($row))continue;
+            $key=mb_strtolower(trim((string)($row['property_key']??'')));$label=trim((string)($row['label']??$key));$type=(string)($row['property_type']??'text');
+            if(!preg_match('/^[a-z0-9_.-]{1,100}$/',$key)||$label===''||!in_array($type,$allowed,true))continue;
+            $valueUser=$row['value_user_id']!==null?(int)$row['value_user_id']:null;
+            if($valueUser){$exists=$this->pdo->prepare("SELECT COUNT(*) FROM `{$this->prefix}users` WHERE id=? AND deleted_at IS NULL");$exists->execute([$valueUser]);if(!(int)$exists->fetchColumn())$valueUser=null;}
+            $options=$row['options_json']??null;if(is_array($options))$options=json_encode($options,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);if(is_string($options)&&json_decode($options,true)===null)$options=null;
+            $values=[
+                'value_text'=>$row['value_text']??null,
+                'value_number'=>$row['value_number']??null,
+                'value_date'=>$row['value_date']??null,
+                'value_user_id'=>$valueUser,
+                'value_boolean'=>$row['value_boolean']===null?null:(int)$row['value_boolean'],
+            ];
+            $insert->execute([$pageId,$key,mb_substr($label,0,150),$type,$values['value_text'],$values['value_number'],$values['value_date'],$values['value_user_id'],$values['value_boolean'],$options,$userId]);
+            $normalized[]=array_merge(['property_key'=>$key,'label'=>mb_substr($label,0,150),'property_type'=>$type],$values,['options_json'=>$options]);
+        }
+        return json_encode($normalized,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)?:'[]';
     }
 
     private function belongsToSpace(int $pageId, int $spaceId): bool
@@ -108,28 +163,6 @@ final class PageService
         }
     }
 
-    private function uniqueSlug(int $spaceId, string $title, ?int $ignoreId=null): string
-    {
-        $base = $this->slugify($title);
-        $slug = $base; $n = 2;
-        while (true) {
-            $sql = "SELECT COUNT(*) FROM `{$this->prefix}pages` WHERE space_id=? AND slug=? AND deleted_at IS NULL" . ($ignoreId ? ' AND id<>?' : '');
-            $stmt = $this->pdo->prepare($sql);
-            $args = [$spaceId,$slug]; if ($ignoreId) $args[]=$ignoreId;
-            $stmt->execute($args);
-            if ((int)$stmt->fetchColumn()===0) return $slug;
-            $slug = $base.'-'.$n++;
-        }
-    }
-
-    private function slugify(string $value): string
-    {
-        $value = trim(mb_strtolower($value));
-        if (function_exists('transliterator_transliterate')) $value = transliterator_transliterate('Any-Latin; Latin-ASCII', $value) ?: $value;
-        $value = preg_replace('/[^a-z0-9]+/u','-',$value) ?? 'page';
-        return trim($value,'-') ?: 'page';
-    }
-
     private function propertySnapshot(int $pageId): string
     {
         $stmt=$this->pdo->prepare("SELECT property_key,label,property_type,value_text,value_number,value_date,value_user_id,value_boolean,options_json FROM `{$this->prefix}page_properties` WHERE page_id=? ORDER BY property_key");
@@ -137,9 +170,21 @@ final class PageService
         return json_encode($stmt->fetchAll(),JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)?:'[]';
     }
 
+    private function workflowEnabled():bool
+    {
+        $stmt=$this->pdo->prepare("SELECT setting_value FROM `{$this->prefix}settings` WHERE setting_key='workflow.status_enabled' LIMIT 1");
+        $stmt->execute();
+        return (string)($stmt->fetchColumn()?:'0')==='1';
+    }
+
     private function activity(int $userId,string $action,string $type,int $id,string $description): void
     {
         $stmt = $this->pdo->prepare("INSERT INTO `{$this->prefix}activity_log` (user_id,action,resource_type,resource_id,description,created_at) VALUES (?,?,?,?,?,UTC_TIMESTAMP())");
         $stmt->execute([$userId,$action,$type,$id,$description]);
+    }
+
+    private function slugs(): SlugService
+    {
+        return $this->slugService ?? new SlugService($this->pdo, $this->prefix);
     }
 }

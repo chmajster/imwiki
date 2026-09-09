@@ -18,13 +18,16 @@ final class PublicShareService
 
     public function setEnabled(bool $enabled):void
     {
-        $stmt=$this->pdo->prepare("INSERT INTO `{$this->prefix}settings` (setting_key,setting_value,is_secret,updated_at) VALUES ('sharing.public_enabled',?,0,UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_at=VALUES(updated_at)");
+        $stmt=$this->pdo->prepare("INSERT INTO `{$this->prefix}settings` (setting_key,setting_value,is_secret,updated_at) VALUES ('sharing.public_enabled',?,0,UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE setting_value=VALUES(setting_value),updated_at=UTC_TIMESTAMP()");
         $stmt->execute([$enabled?'1':'0']);
     }
 
     public function create(int $pageId,int $userId,?string $expiresAt,?string $password):array
     {
         if(!$this->enabled())throw new RuntimeException('Public sharing jest wyłączony przez administratora.');
+        $status=$this->pdo->prepare("SELECT status FROM `{$this->prefix}pages` WHERE id=? AND deleted_at IS NULL LIMIT 1");
+        $status->execute([$pageId]);
+        if((string)($status->fetchColumn()?:'')!=='published')throw new RuntimeException('Public sharing jest dostępny tylko dla opublikowanych stron.');
         $raw=rtrim(strtr(base64_encode(random_bytes(32)),'+/','-_'),'=');
         $hash=hash('sha256',$raw);$prefix=substr($raw,0,10);
         $expiry=$expiresAt!==null&&$expiresAt!==''?$expiresAt.' 23:59:59':null;
@@ -49,7 +52,7 @@ final class PublicShareService
     public function resolve(string $token):?array
     {
         if(!$this->enabled()||$token==='')return null;
-        $stmt=$this->pdo->prepare("SELECT ps.*,p.title,p.content,p.status,p.updated_at,s.name space_name FROM `{$this->prefix}public_shares` ps JOIN `{$this->prefix}pages` p ON p.id=ps.page_id JOIN `{$this->prefix}spaces` s ON s.id=p.space_id WHERE ps.token_hash=? AND ps.revoked_at IS NULL AND (ps.expires_at IS NULL OR ps.expires_at>=UTC_TIMESTAMP()) AND p.deleted_at IS NULL AND p.status<>'archived' LIMIT 1");
+        $stmt=$this->pdo->prepare("SELECT ps.*,p.title,p.content,p.status,p.updated_at,s.name space_name FROM `{$this->prefix}public_shares` ps JOIN `{$this->prefix}pages` p ON p.id=ps.page_id JOIN `{$this->prefix}spaces` s ON s.id=p.space_id WHERE ps.token_hash=? AND ps.revoked_at IS NULL AND (ps.expires_at IS NULL OR ps.expires_at>=UTC_TIMESTAMP()) AND p.deleted_at IS NULL AND p.status='published' LIMIT 1");
         $stmt->execute([hash('sha256',$token)]);$share=$stmt->fetch();return $share?:null;
     }
 

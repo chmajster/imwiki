@@ -11,11 +11,20 @@ use RuntimeException;
 final class TotpService
 {
     private const ALPHABET='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    private const SCHEMA_MIGRATION='004_security_sharing_operations.php';
+
     public function __construct(private readonly PDO $pdo,private readonly string $prefix,private readonly Crypto $crypto){}
 
     public function enabled(int $userId):bool
     {
-        try{$stmt=$this->pdo->prepare("SELECT confirmed_at IS NOT NULL FROM `{$this->prefix}user_totp` WHERE user_id=?");$stmt->execute([$userId]);return (bool)$stmt->fetchColumn();}catch(PDOException){return false;}
+        try{
+            $stmt=$this->pdo->prepare("SELECT confirmed_at IS NOT NULL FROM `{$this->prefix}user_totp` WHERE user_id=?");
+            $stmt->execute([$userId]);
+            return (bool)$stmt->fetchColumn();
+        }catch(PDOException $e){
+            if($this->schemaMayBePending($e,self::SCHEMA_MIGRATION))return false;
+            throw $e;
+        }
     }
 
     public function begin(int $userId):string
@@ -67,6 +76,20 @@ final class TotpService
     public function remainingRecoveryCodes(int $userId):int
     {
         $stmt=$this->pdo->prepare("SELECT COUNT(*) FROM `{$this->prefix}recovery_codes` WHERE user_id=? AND used_at IS NULL");$stmt->execute([$userId]);return (int)$stmt->fetchColumn();
+    }
+
+    private function schemaMayBePending(PDOException $e,string $migration):bool
+    {
+        $sqlState=(string)($e->errorInfo[0]??$e->getCode());
+        $driverCode=(int)($e->errorInfo[1]??0);
+        if($sqlState!=='42S02'&&$driverCode!==1146)return false;
+        try{
+            $stmt=$this->pdo->prepare("SELECT COUNT(*) FROM `{$this->prefix}migrations` WHERE migration=?");
+            $stmt->execute([$migration]);
+            return (int)$stmt->fetchColumn()===0;
+        }catch(PDOException){
+            return false;
+        }
     }
 
     private function verifySecret(string $secret,string $code):bool

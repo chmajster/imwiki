@@ -8,20 +8,45 @@ use PDOException;
 
 final class SessionService
 {
+    private const SCHEMA_MIGRATION='004_security_sharing_operations.php';
+
     public function __construct(private readonly PDO $pdo,private readonly string $prefix=''){}
 
     public function start(int $userId,string $ip,string $userAgent):void
     {
         $raw=rtrim(strtr(base64_encode(random_bytes(32)),'+/','-_'),'=');
-        try{$stmt=$this->pdo->prepare("INSERT INTO `{$this->prefix}user_sessions` (user_id,session_key_hash,ip_address,user_agent,created_at,last_seen_at) VALUES (?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");$stmt->execute([$userId,hash('sha256',$raw),substr($ip,0,64),substr($userAgent,0,500)]);$_SESSION['session_key']=$raw;}catch(PDOException){unset($_SESSION['session_key']);}
+        try{
+            $stmt=$this->pdo->prepare("INSERT INTO `{$this->prefix}user_sessions` (user_id,session_key_hash,ip_address,user_agent,created_at,last_seen_at) VALUES (?,?,?,?,UTC_TIMESTAMP(),UTC_TIMESTAMP())");
+            $stmt->execute([$userId,hash('sha256',$raw),substr($ip,0,64),substr($userAgent,0,500)]);
+            $_SESSION['session_key']=$raw;
+        }catch(PDOException $e){
+            unset($_SESSION['session_key']);
+            if($this->schemaMayBePending($e,self::SCHEMA_MIGRATION))return;
+            throw $e;
+        }
     }
 
     public function ensureCurrent(int $userId,string $ip,string $userAgent):bool
     {
-        $raw=(string)($_SESSION['session_key']??'');if($raw===''){try{$this->start($userId,$ip,$userAgent);return true;}catch(PDOException){return true;}}
-        try{$hash=hash('sha256',$raw);$stmt=$this->pdo->prepare("SELECT id,revoked_at,last_seen_at FROM `{$this->prefix}user_sessions` WHERE user_id=? AND session_key_hash=? LIMIT 1");$stmt->execute([$userId,$hash]);$row=$stmt->fetch();if(!$row||$row['revoked_at'])return false;
-            $last=strtotime((string)$row['last_seen_at'])?:0;if(time()-$last>60){$this->pdo->prepare("UPDATE `{$this->prefix}user_sessions` SET last_seen_at=UTC_TIMESTAMP(),ip_address=?,user_agent=? WHERE id=?")->execute([substr($ip,0,64),substr($userAgent,0,500),(int)$row['id']]);}return true;
-        }catch(PDOException){return true;}
+        $raw=(string)($_SESSION['session_key']??'');
+        if($raw===''){
+            try{$this->start($userId,$ip,$userAgent);return true;}
+            catch(PDOException){return false;}
+        }
+        try{
+            $hash=hash('sha256',$raw);
+            $stmt=$this->pdo->prepare("SELECT id,revoked_at,last_seen_at FROM `{$this->prefix}user_sessions` WHERE user_id=? AND session_key_hash=? LIMIT 1");
+            $stmt->execute([$userId,$hash]);
+            $row=$stmt->fetch();
+            if(!$row||$row['revoked_at'])return false;
+            $last=strtotime((string)$row['last_seen_at'])?:0;
+            if(time()-$last>60){
+                $this->pdo->prepare("UPDATE `{$this->prefix}user_sessions` SET last_seen_at=UTC_TIMESTAMP(),ip_address=?,user_agent=? WHERE id=?")->execute([substr($ip,0,64),substr($userAgent,0,500),(int)$row['id']]);
+            }
+            return true;
+        }catch(PDOException $e){
+            return $this->schemaMayBePending($e,self::SCHEMA_MIGRATION);
+        }
     }
 
     public function recordLogin(?int $userId,string $identifier,string $ip,string $userAgent,bool $success):void
@@ -57,5 +82,26 @@ final class SessionService
     public function revokeAllForUser(int $userId):void
     {
         $this->pdo->prepare("UPDATE `{$this->prefix}user_sessions` SET revoked_at=UTC_TIMESTAMP() WHERE user_id=? AND revoked_at IS NULL")->execute([$userId]);
+    }
+
+    public function revokeCredentialsForUser(int $userId,bool $keepCurrentSession=false):void
+    {
+        $this->pdo->prepare("UPDATE `{$this->prefix}api_tokens` SET revoked_at=COALESCE(revoked_at,UTC_TIMESTAMP()) WHERE user_id=? AND revoked_at IS NULL")->execute([$userId]);
+        $this->pdo->prepare("UPDATE `{$this->prefix}password_reset_tokens` SET used_at=COALESCE(used_at,UTC_TIMESTAMP()) WHERE user_id=? AND used_at IS NULL")->execute([$userId]);
+        if($keepCurrentSession)$this->revokeOthers($userId);else$this->revokeAllForUser($userId);
+    }
+
+    private function schemaMayBePending(PDOException $e,string $migration):bool
+    {
+        $sqlState=(string)($e->errorInfo[0]??$e->getCode());
+        $driverCode=(int)($e->errorInfo[1]??0);
+        if($sqlState!=='42S02'&&$driverCode!==1146)return false;
+        try{
+            $stmt=$this->pdo->prepare("SELECT COUNT(*) FROM `{$this->prefix}migrations` WHERE migration=?");
+            $stmt->execute([$migration]);
+            return (int)$stmt->fetchColumn()===0;
+        }catch(PDOException){
+            return false;
+        }
     }
 }

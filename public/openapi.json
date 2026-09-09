@@ -1,15 +1,259 @@
 {
-  "openapi":"3.0.3",
-  "info":{"title":"imWiki REST API","version":"0.2.0"},
-  "servers":[{"url":"./api/v1"}],
-  "components":{"securitySchemes":{"bearerAuth":{"type":"http","scheme":"bearer","bearerFormat":"imw_ token"}}},
-  "security":[{"bearerAuth":[]}],
-  "paths":{
-    "/spaces":{"get":{"summary":"List visible spaces","responses":{"200":{"description":"OK"},"401":{"description":"Unauthorized"},"403":{"description":"Missing scope"}}}},
-    "/pages/{id}":{"get":{"summary":"Get page with normal ACL","parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"integer"}}],"responses":{"200":{"description":"OK"},"404":{"description":"Not found or not visible"}}},"put":{"summary":"Update a page using optimistic locking","parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"integer"}}],"responses":{"200":{"description":"Updated"},"409":{"description":"Version conflict"}}}},
-    "/pages":{"post":{"summary":"Create page","responses":{"201":{"description":"Created"},"403":{"description":"Forbidden"}}}},
-    "/search":{"get":{"summary":"Search visible pages","parameters":[{"name":"q","in":"query","schema":{"type":"string"}}],"responses":{"200":{"description":"OK"}}}},
-    "/pages/{id}/attachments":{"post":{"summary":"Upload attachment","responses":{"201":{"description":"Created"}}}},
-    "/attachments/{id}":{"get":{"summary":"Download current attachment version","responses":{"200":{"description":"Binary attachment"},"404":{"description":"Not found or not visible"}}}}
+  "openapi": "3.0.3",
+  "info": {
+    "title": "imWiki REST API",
+    "version": "0.3.0",
+    "description": "Versioned REST API for pages, spaces, search and attachments. Every endpoint enforces token scopes and the same ACL rules as the web UI."
+  },
+  "servers": [
+    {"url": "./api/v1"}
+  ],
+  "security": [
+    {"bearerAuth": []}
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "imw_<token>"
+      }
+    },
+    "parameters": {
+      "PageId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": {"type": "integer", "minimum": 1}
+      }
+    },
+    "schemas": {
+      "ApiError": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {"type": "string"},
+          "message": {"type": "string"},
+          "required_scope": {"type": "string"},
+          "current_version": {"type": "integer"}
+        },
+        "additionalProperties": true
+      },
+      "Space": {
+        "type": "object",
+        "required": ["id", "key", "name", "visibility", "archived"],
+        "properties": {
+          "id": {"type": "integer"},
+          "key": {"type": "string"},
+          "name": {"type": "string"},
+          "description": {"type": "string", "nullable": true},
+          "visibility": {"type": "string", "enum": ["logged_in", "private", "restricted"]},
+          "archived": {"type": "boolean"}
+        }
+      },
+      "Page": {
+        "type": "object",
+        "required": ["id", "space_id", "title", "slug", "content", "status", "version", "owner_id", "updated_at"],
+        "properties": {
+          "id": {"type": "integer"},
+          "space_id": {"type": "integer"},
+          "parent_id": {"type": "integer", "nullable": true},
+          "title": {"type": "string"},
+          "slug": {"type": "string"},
+          "content": {"type": "string", "description": "Sanitized rich-text HTML"},
+          "status": {"type": "string", "enum": ["draft", "in_review", "approved", "published", "archived"]},
+          "version": {"type": "integer", "minimum": 1},
+          "owner_id": {"type": "integer"},
+          "updated_at": {"type": "string"}
+        }
+      },
+      "PageEnvelope": {
+        "type": "object",
+        "required": ["page"],
+        "properties": {"page": {"$ref": "#/components/schemas/Page"}}
+      },
+      "PageCreate": {
+        "type": "object",
+        "required": ["space_id", "title"],
+        "properties": {
+          "space_id": {"type": "integer", "minimum": 1},
+          "parent_id": {"type": "integer", "nullable": true, "minimum": 1},
+          "title": {"type": "string", "minLength": 1, "maxLength": 255},
+          "content": {"type": "string", "default": ""}
+        },
+        "additionalProperties": false
+      },
+      "PageUpdate": {
+        "type": "object",
+        "required": ["base_version"],
+        "properties": {
+          "base_version": {"type": "integer", "minimum": 1},
+          "parent_id": {"type": "integer", "nullable": true, "minimum": 1},
+          "title": {"type": "string", "minLength": 1, "maxLength": 255},
+          "content": {"type": "string"},
+          "change_comment": {"type": "string", "maxLength": 500}
+        },
+        "additionalProperties": false
+      },
+      "PageUpdateResponse": {
+        "type": "object",
+        "required": ["page", "version"],
+        "properties": {
+          "page": {"$ref": "#/components/schemas/Page"},
+          "version": {"type": "integer", "minimum": 1}
+        }
+      },
+      "SearchItem": {
+        "type": "object",
+        "required": ["id", "title", "space", "space_key", "score"],
+        "properties": {
+          "id": {"type": "integer"},
+          "title": {"type": "string"},
+          "space": {"type": "string"},
+          "space_key": {"type": "string"},
+          "score": {"type": "number", "format": "float"}
+        }
+      },
+      "AttachmentCreated": {
+        "type": "object",
+        "required": ["attachment_id"],
+        "properties": {"attachment_id": {"type": "integer", "minimum": 1}}
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid bearer token",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}
+      },
+      "Forbidden": {
+        "description": "Token scope or ACL does not permit the operation",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}
+      },
+      "NotFound": {
+        "description": "Resource does not exist or is hidden by ACL",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}
+      },
+      "Validation": {
+        "description": "Input validation failed",
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}
+      }
+    }
+  },
+  "paths": {
+    "/spaces": {
+      "get": {
+        "summary": "List visible spaces",
+        "x-imwiki-scope": "spaces:read",
+        "responses": {
+          "200": {
+            "description": "Visible spaces",
+            "content": {"application/json": {"schema": {"type": "object", "required": ["items"], "properties": {"items": {"type": "array", "items": {"$ref": "#/components/schemas/Space"}}}}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
+    "/pages/{id}": {
+      "parameters": [{"$ref": "#/components/parameters/PageId"}],
+      "get": {
+        "summary": "Get one visible page",
+        "x-imwiki-scope": "pages:read",
+        "responses": {
+          "200": {"description": "Page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PageEnvelope"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"}
+        }
+      },
+      "put": {
+        "summary": "Update a page using optimistic locking",
+        "x-imwiki-scope": "pages:write",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PageUpdate"}}}
+        },
+        "responses": {
+          "200": {"description": "Updated page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PageUpdateResponse"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"description": "Version conflict", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ApiError"}}}},
+          "422": {"$ref": "#/components/responses/Validation"}
+        }
+      }
+    },
+    "/pages": {
+      "post": {
+        "summary": "Create a page",
+        "x-imwiki-scope": "pages:write",
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PageCreate"}}}
+        },
+        "responses": {
+          "201": {"description": "Created page", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/PageEnvelope"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "422": {"$ref": "#/components/responses/Validation"}
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "summary": "Search pages visible to the token user",
+        "x-imwiki-scope": "pages:read",
+        "parameters": [
+          {"name": "q", "in": "query", "schema": {"type": "string", "maxLength": 500}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Search results",
+            "content": {"application/json": {"schema": {"type": "object", "required": ["query", "items"], "properties": {"query": {"type": "string"}, "items": {"type": "array", "items": {"$ref": "#/components/schemas/SearchItem"}}}}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
+    "/pages/{id}/attachments": {
+      "parameters": [{"$ref": "#/components/parameters/PageId"}],
+      "post": {
+        "summary": "Upload an attachment to a page",
+        "x-imwiki-scope": "attachments:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": ["attachment"],
+                "properties": {"attachment": {"type": "string", "format": "binary"}}
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {"description": "Attachment created", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AttachmentCreated"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "422": {"$ref": "#/components/responses/Validation"}
+        }
+      }
+    },
+    "/attachments/{id}": {
+      "get": {
+        "summary": "Download the current version of an attachment",
+        "x-imwiki-scope": "attachments:read",
+        "parameters": [{"$ref": "#/components/parameters/PageId"}],
+        "responses": {
+          "200": {"description": "Binary attachment", "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"}
+        }
+      }
+    }
   }
 }

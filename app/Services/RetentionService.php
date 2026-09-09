@@ -31,8 +31,39 @@ final class RetentionService
         $result['login_history']=$this->deleteOlder('login_history','created_at',$s['login_history']);
         $result['notifications']=$this->deleteOlder('notifications','created_at',$s['notifications']);
         $result['trash']=$s['trash']>0?$this->purgeTrash($s['trash']):0;
-        $result['application_logs']=$this->rotateLog($s['application_logs']);
+        $result['orphan_uploads']=$this->garbageCollectUploads();
+        $result['backup_artifacts']=$this->expireBackupArtifacts();
+        $result['application_logs']=$this->rotateLogs($s['application_logs']);
         return $result;
+    }
+
+    public function garbageCollectUploads(bool $dryRun=false): int
+    {
+        $dir=$this->root.'/storage/uploads';if(!is_dir($dir))return 0;
+        $referenced=[];
+        $stmt=$this->pdo->query("SELECT stored_name FROM `{$this->prefix}attachment_versions`");
+        foreach($stmt->fetchAll(PDO::FETCH_COLUMN) as $name)$referenced[(string)$name]=true;
+        $count=0;
+        foreach(new \DirectoryIterator($dir) as $file){
+            if(!$file->isFile())continue;$name=$file->getFilename();
+            if(!preg_match('/^[a-f0-9]{48}$/',$name)||isset($referenced[$name]))continue;
+            if($dryRun){$count++;continue;}
+            if(@unlink($file->getPathname()))$count++;
+        }
+        return $count;
+    }
+
+    private function expireBackupArtifacts(): int
+    {
+        $stmt=$this->pdo->query("SELECT id,status,stored_name FROM `{$this->prefix}backup_artifacts` WHERE status IN ('ready','failed') AND expires_at IS NOT NULL AND expires_at<=UTC_TIMESTAMP() LIMIT 500");
+        $rows=$stmt->fetchAll();$count=0;
+        $mark=$this->pdo->prepare("UPDATE `{$this->prefix}backup_artifacts` SET status='expired',stored_name=NULL WHERE id=? AND status IN ('ready','failed')");
+        foreach($rows as $row){
+            $name=(string)($row['stored_name']??'');
+            if($name!==''&&preg_match('/^[a-f0-9]{48}\.zip$/',$name))@unlink($this->root.'/storage/private/backups/'.$name);
+            $mark->execute([(int)$row['id']]);$count+=$mark->rowCount();
+        }
+        return $count;
     }
 
     private function deleteOlder(string $table,string $column,int $days): int
@@ -48,9 +79,13 @@ final class RetentionService
         $stmt->bindValue(1,$days,PDO::PARAM_INT);$stmt->execute();return $stmt->rowCount();
     }
 
-    private function rotateLog(int $days): int
+    private function rotateLogs(int $days): int
     {
-        if($days<=0)return 0;$path=$this->root.'/storage/logs/imwiki.log';if(!is_file($path))return 0;
-        $mtime=@filemtime($path);if($mtime!==false && $mtime<time()-($days*86400)){@file_put_contents($path,'',LOCK_EX);return 1;}return 0;
+        if($days<=0)return 0;$dir=$this->root.'/storage/logs';if(!is_dir($dir))return 0;
+        $cutoff=time()-($days*86400);$count=0;
+        foreach(glob($dir.'/imwiki*.log')?:[] as $path){
+            $mtime=@filemtime($path);if($mtime!==false&&$mtime<$cutoff&&@unlink($path))$count++;
+        }
+        return $count;
     }
 }
