@@ -18,8 +18,10 @@ final class AdminOperationsController extends BaseController
 
     public function logs(Request $request): void
     {
-        $this->admin();$q=trim((string)$request->input('q',''));$level=strtoupper(trim((string)$request->input('level','')));$page=max(1,(int)$request->input('page',1));$per=100;$path=$this->root.'/storage/logs/imwiki.log';$rows=[];
-        if(is_file($path)){$lines=@file($path,FILE_IGNORE_NEW_LINES)?:[];$lines=array_reverse(array_slice($lines,-10000));foreach($lines as $line){if($q!==''&&!str_contains(mb_strtolower($line),mb_strtolower($q)))continue;if($level!==''&&!preg_match('/\]\s+'.preg_quote($level,'/').'\s+/',$line))continue;$rows[]=$this->maskLog($line);}}
+        $this->admin();$q=trim((string)$request->input('q',''));$level=strtoupper(trim((string)$request->input('level','')));$page=max(1,(int)$request->input('page',1));$per=100;$rows=[];
+        $files=glob($this->root.'/storage/logs/imwiki*.log')?:[];usort($files,static fn(string $a,string $b):int=>(@filemtime($b)?:0)<=> (@filemtime($a)?:0));
+        $lines=[];foreach($files as $path){$chunk=@file($path,FILE_IGNORE_NEW_LINES)?:[];$lines=array_merge($lines,array_reverse($chunk));if(count($lines)>=10000)break;}$lines=array_slice($lines,0,10000);
+        foreach($lines as $line){if($q!==''&&!str_contains(mb_strtolower($line),mb_strtolower($q)))continue;if($level!==''&&!preg_match('/\]\s+'.preg_quote($level,'/').'\s+/',$line))continue;$rows[]=$this->maskLog($line);}
         $total=count($rows);$rows=array_slice($rows,($page-1)*$per,$per);echo $this->view->render('admin/logs.php',$this->common(['rows'=>$rows,'query'=>$q,'level'=>$level,'page'=>$page,'pages'=>max(1,(int)ceil($total/$per))]));
     }
 
