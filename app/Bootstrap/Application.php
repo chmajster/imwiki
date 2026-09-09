@@ -52,6 +52,7 @@ use ImWiki\Security\SsrfGuard;
 use ImWiki\Services\ApiTokenService;
 use ImWiki\Services\AttachmentService;
 use ImWiki\Services\AuthService;
+use ImWiki\Services\BackupArtifactService;
 use ImWiki\Services\BackupService;
 use ImWiki\Services\ContentHealthService;
 use ImWiki\Services\ContentRenderer;
@@ -161,7 +162,9 @@ final class Application
         $cache=new Cache($this->root.'/storage/cache');
         $passwordResets=new PasswordResetService($pdo,$prefix,$users,$sessionService);
         $webhookService=new WebhookService($pdo,$prefix,$authz,$crypto,new SsrfGuard(),$jobs);
-        $jobRunner=new JobRunner($jobs,$mailService,$crypto,$webhookService,$notifications);
+        $backupService=new BackupService($pdo,$prefix,$this->root);
+        $backupArtifacts=new BackupArtifactService($pdo,$prefix,$this->root,$backupService,$jobs);
+        $jobRunner=new JobRunner($jobs,$mailService,$crypto,$webhookService,$notifications,$backupArtifacts);
         $this->registerDeferredWork($schedulerService,$jobRunner);
 
         $workflowService=new WorkflowService($pdo,$prefix,$pages,$authz,$notifications);
@@ -192,7 +195,6 @@ final class Application
         $pageOperationService=new PageOperationService($pdo,$prefix,$pages,$authz,$pageService,$events,$slugs);
         $markdownService=new MarkdownService();
         $importExportService=new ImportExportService($pdo,$prefix,$pages,$spaces,$authz,$pageService,$markdownService,$this->root);
-        $backupService=new BackupService($pdo,$prefix,$this->root);
         $userManagementService=new UserManagementService($pdo,$prefix,$sessionService);
         $templateService=new TemplateService($pdo,$prefix,$authz);
         $spaceManagementService=new SpaceManagementService($pdo,$prefix,$spaces,$authz);
@@ -230,7 +232,7 @@ final class Application
         $controllers['templates']=new TemplateController($pdo,$prefix,$view,$users,$authz,$notifications,$templateService,$spaces);
         $controllers['spaceAdmin']=new SpaceAdminController($pdo,$prefix,$view,$users,$authz,$notifications,$spaces,$pages,$spaceManagementService);
         $controllers['importExport']=new ImportExportController($pdo,$prefix,$view,$users,$authz,$notifications,$importExportService);
-        $controllers['backup']=new BackupController($pdo,$prefix,$view,$users,$authz,$notifications,$backupService);
+        $controllers['backup']=new BackupController($pdo,$prefix,$view,$users,$authz,$notifications,$backupArtifacts);
         $controllers['tree']=new TreeController($pdo,$prefix,$view,$users,$authz,$notifications,$spaces,$pages);
 
         $router=new Router();
