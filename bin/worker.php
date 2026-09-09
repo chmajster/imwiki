@@ -13,6 +13,8 @@ use ImWiki\Repositories\UserRepository;
 use ImWiki\Security\Authorization;
 use ImWiki\Security\Crypto;
 use ImWiki\Security\SsrfGuard;
+use ImWiki\Services\BackupArtifactService;
+use ImWiki\Services\BackupService;
 use ImWiki\Services\JobQueueService;
 use ImWiki\Services\JobRunner;
 use ImWiki\Services\MailService;
@@ -23,7 +25,7 @@ use ImWiki\Support\Config;
 
 $db=(array)Config::get('db',[]);$pdo=Connection::create($db);$pdo->exec("SET time_zone = '+00:00'");$prefix=(string)($db['prefix']??'');
 $users=new UserRepository($pdo,$prefix);$pages=new PageRepository($pdo,$prefix);$authz=new Authorization($pdo,$users,$prefix);$jobs=new JobQueueService($pdo,$prefix);$crypto=new Crypto((string)Config::get('app.secret',''));
-$notifications=new NotificationService($pdo,$prefix,$authz,$pages,$jobs);$mail=new MailService($pdo,$prefix,$crypto,new SmtpClient());$webhooks=new WebhookService($pdo,$prefix,$authz,$crypto,new SsrfGuard(),$jobs);$runner=new JobRunner($jobs,$mail,$crypto,$webhooks,$notifications);
+$notifications=new NotificationService($pdo,$prefix,$authz,$pages,$jobs);$mail=new MailService($pdo,$prefix,$crypto,new SmtpClient());$webhooks=new WebhookService($pdo,$prefix,$authz,$crypto,new SsrfGuard(),$jobs);$backupService=new BackupService($pdo,$prefix,$root);$backupArtifacts=new BackupArtifactService($pdo,$prefix,$root,$backupService,$jobs);$runner=new JobRunner($jobs,$mail,$crypto,$webhooks,$notifications,$backupArtifacts);
 
 $daemon=in_array('--daemon',$argv,true);$limit=50;$sleep=5;
 foreach($argv as $arg){if(str_starts_with($arg,'--limit='))$limit=max(1,min(100,(int)substr($arg,8)));if(str_starts_with($arg,'--sleep='))$sleep=max(1,min(60,(int)substr($arg,8)));}
