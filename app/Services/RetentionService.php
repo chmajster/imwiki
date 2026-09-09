@@ -32,6 +32,7 @@ final class RetentionService
         $result['notifications']=$this->deleteOlder('notifications','created_at',$s['notifications']);
         $result['trash']=$s['trash']>0?$this->purgeTrash($s['trash']):0;
         $result['orphan_uploads']=$this->garbageCollectUploads();
+        $result['backup_artifacts']=$this->expireBackupArtifacts();
         $result['application_logs']=$this->rotateLogs($s['application_logs']);
         return $result;
     }
@@ -48,6 +49,19 @@ final class RetentionService
             if(!preg_match('/^[a-f0-9]{48}$/',$name)||isset($referenced[$name]))continue;
             if($dryRun){$count++;continue;}
             if(@unlink($file->getPathname()))$count++;
+        }
+        return $count;
+    }
+
+    private function expireBackupArtifacts(): int
+    {
+        $stmt=$this->pdo->query("SELECT id,status,stored_name FROM `{$this->prefix}backup_artifacts` WHERE status IN ('ready','failed') AND expires_at IS NOT NULL AND expires_at<=UTC_TIMESTAMP() LIMIT 500");
+        $rows=$stmt->fetchAll();$count=0;
+        $mark=$this->pdo->prepare("UPDATE `{$this->prefix}backup_artifacts` SET status='expired',stored_name=NULL WHERE id=? AND status IN ('ready','failed')");
+        foreach($rows as $row){
+            $name=(string)($row['stored_name']??'');
+            if($name!==''&&preg_match('/^[a-f0-9]{48}\.zip$/',$name))@unlink($this->root.'/storage/private/backups/'.$name);
+            $mark->execute([(int)$row['id']]);$count+=$mark->rowCount();
         }
         return $count;
     }
