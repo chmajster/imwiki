@@ -37,10 +37,11 @@ jobs:
         run: find . -name '*.php' -not -path './vendor/*' -print0 | xargs -0 -n1 php -l
       - name: Unit and security tests
         run: php tests/run.php
-      - name: Migration and security integration
+      - name: Migration, security and reliability integration
         run: |
           php tests/fresh_install.php
           php tests/security_integration.php
+          php tests/reliability_integration.php
           php tests/install_smoke.php
           php tests/upgrade_smoke.php
       - name: JavaScript syntax
