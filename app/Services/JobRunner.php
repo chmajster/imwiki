@@ -16,7 +16,7 @@ final class JobRunner
         private readonly ?BackupArtifactService $backups=null,
     ){}
 
-    public function run(int $limit=50):array
+    public function run(int $limit=50,bool $includeHeavy=false):array
     {
         $handlers=[
             'email'=>fn(array $p)=>$this->mail->send((string)$p['to'],(string)$p['subject'],(string)$p['html'],(string)$p['text']),
@@ -34,7 +34,7 @@ final class JobRunner
             },
             'webhook'=>fn(array $p)=>$this->webhooks->deliver($p),
         ];
-        if($this->backups)$handlers['backup']=fn(array $p)=>$this->backups->process((int)($p['artifact_id']??0));
+        if($includeHeavy&&$this->backups)$handlers['backup']=fn(array $p)=>$this->backups->process((int)($p['artifact_id']??0));
         return $this->jobs->process($limit,$handlers);
     }
 }
