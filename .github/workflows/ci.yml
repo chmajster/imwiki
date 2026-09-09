@@ -30,7 +30,7 @@ jobs:
       - name: Unit and security tests
         run: php tests/run.php
       - name: Fresh migration install
-        env:
+        env: &db-env
           TEST_DB_HOST: 127.0.0.1
           TEST_DB_PORT: 3306
           TEST_DB_NAME: imwiki_test
@@ -38,12 +38,13 @@ jobs:
           TEST_DB_PASS: imwiki
         run: php tests/fresh_install.php
       - name: Security integration invariants
-        env:
-          TEST_DB_HOST: 127.0.0.1
-          TEST_DB_PORT: 3306
-          TEST_DB_NAME: imwiki_test
-          TEST_DB_USER: imwiki
-          TEST_DB_PASS: imwiki
+        env: *db-env
         run: php tests/security_integration.php
+      - name: Browser-installer service smoke
+        env: *db-env
+        run: php tests/install_smoke.php
+      - name: Incremental upgrade and retry smoke
+        env: *db-env
+        run: php tests/upgrade_smoke.php
       - name: JavaScript syntax
         run: node --check public/assets/app.js
