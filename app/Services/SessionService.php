@@ -84,6 +84,13 @@ final class SessionService
         $this->pdo->prepare("UPDATE `{$this->prefix}user_sessions` SET revoked_at=UTC_TIMESTAMP() WHERE user_id=? AND revoked_at IS NULL")->execute([$userId]);
     }
 
+    public function revokeCredentialsForUser(int $userId,bool $keepCurrentSession=false):void
+    {
+        $this->pdo->prepare("UPDATE `{$this->prefix}api_tokens` SET revoked_at=COALESCE(revoked_at,UTC_TIMESTAMP()) WHERE user_id=? AND revoked_at IS NULL")->execute([$userId]);
+        $this->pdo->prepare("UPDATE `{$this->prefix}password_reset_tokens` SET used_at=COALESCE(used_at,UTC_TIMESTAMP()) WHERE user_id=? AND used_at IS NULL")->execute([$userId]);
+        if($keepCurrentSession)$this->revokeOthers($userId);else$this->revokeAllForUser($userId);
+    }
+
     private function schemaMayBePending(PDOException $e,string $migration):bool
     {
         $sqlState=(string)($e->errorInfo[0]??$e->getCode());
