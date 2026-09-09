@@ -8,6 +8,7 @@ use ImWiki\Security\Crypto;
 use ImWiki\Security\Csrf;
 use ImWiki\Security\Html;
 use ImWiki\Security\SsrfGuard;
+use ImWiki\Services\MarkdownService;
 
 $failures = [];
 $assert = static function (bool $ok, string $name) use (&$failures): void {
@@ -38,6 +39,34 @@ $guard = new SsrfGuard();
 foreach (['http://127.0.0.1/x','http://localhost/x','http://169.254.169.254/latest/meta-data'] as $url) {
     try { $guard->validate($url); $assert(false, 'ssrf rejects ' . $url); } catch (Throwable) { $assert(true, 'ssrf rejects ' . $url); }
 }
+
+$markdown = new MarkdownService();
+$html = '<h1>Dokumentacja</h1><p>Tekst <strong>ważny</strong> i <a href="https://example.com/docs">link</a>.</p><ul><li>Pierwszy</li><li>Drugi</li></ul><pre><code class="language-bash">echo test</code></pre>';
+$md = $markdown->fromHtml($html);
+$assert(str_contains($md, '# Dokumentacja'), 'markdown exports heading');
+$assert(str_contains($md, '**ważny**'), 'markdown exports strong text');
+$assert(str_contains($md, '[link](https://example.com/docs)'), 'markdown exports links');
+$assert(str_contains($md, '- Pierwszy'), 'markdown exports lists');
+$assert(str_contains($md, "```bash\necho test\n```"), 'markdown exports fenced code');
+$roundtrip = $markdown->toHtml($md);
+$assert(str_contains($roundtrip, '<h1>Dokumentacja</h1>'), 'markdown roundtrip heading');
+$assert(str_contains($roundtrip, '<strong>ważny</strong>'), 'markdown roundtrip formatting');
+$document = $markdown->exportDocument([
+    'id' => 7,
+    'title' => 'Test',
+    'slug' => 'test',
+    'space_key' => 'DOC',
+    'owner_username' => 'admin',
+    'status' => 'published',
+    'review_date' => '2026-12-01',
+    'updated_at' => '2026-09-09 00:00:00',
+    'content' => $html,
+], ['docs', 'test']);
+$parsed = $markdown->parseDocument($document);
+$assert(($parsed['meta']['title'] ?? null) === 'Test', 'frontmatter preserves title');
+$assert(($parsed['meta']['labels'] ?? null) === ['docs', 'test'], 'frontmatter preserves label list');
+$assert(($parsed['meta']['status'] ?? null) === 'published', 'frontmatter preserves status');
+$assert(!str_contains($document, '<h1>Dokumentacja</h1>'), 'markdown export does not store normal rich text as HTML');
 
 if ($failures) {
     fwrite(STDERR, "FAILED:\n - " . implode("\n - ", $failures) . "\n");
