@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace ImWiki\Repositories;
 
+use ImWiki\Services\SearchQuery;
 use PDO;
 
 final class PageRepository
@@ -15,7 +16,6 @@ final class PageRepository
         $stmt->execute([$id]);
         return $stmt->fetch() ?: null;
     }
-
 
     public function findBySlug(int $spaceId,string $slug): ?array
     {
@@ -96,23 +96,11 @@ final class PageRepository
 
     public function search(string $query, int $limit = 25): array
     {
-        $query = trim($query);
-        if ($query === '') return [];
-        $stmt = $this->pdo->prepare("SELECT p.id,p.title,s.name space_name,s.space_key, MATCH(p.title,p.content) AGAINST (:q IN NATURAL LANGUAGE MODE) score FROM `{$this->prefix}pages` p JOIN `{$this->prefix}spaces` s ON s.id=p.space_id WHERE p.deleted_at IS NULL AND p.status<>'archived' AND MATCH(p.title,p.content) AGAINST (:q2 IN NATURAL LANGUAGE MODE) ORDER BY score DESC LIMIT :limit");
-        $stmt->bindValue(':q', $query);
-        $stmt->bindValue(':q2', $query);
-        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-        try {
-            $stmt->execute();
-            return $stmt->fetchAll();
-        } catch (\PDOException) {
-            $like = '%' . $query . '%';
-            $fallback = $this->pdo->prepare("SELECT p.id,p.title,s.name space_name,s.space_key,0 score FROM `{$this->prefix}pages` p JOIN `{$this->prefix}spaces` s ON s.id=p.space_id WHERE p.deleted_at IS NULL AND p.status<>'archived' AND (p.title LIKE :q OR p.content LIKE :q2) ORDER BY p.updated_at DESC LIMIT :limit");
-            $fallback->bindValue(':q', $like);
-            $fallback->bindValue(':q2', $like);
-            $fallback->bindValue(':limit', $limit, PDO::PARAM_INT);
-            $fallback->execute();
-            return $fallback->fetchAll();
-        }
+        return SearchQuery::run($this->pdo,$this->prefix,$query,0,true,$limit);
+    }
+
+    public function searchVisible(string $query,int $userId,bool $admin,int $limit=25):array
+    {
+        return SearchQuery::run($this->pdo,$this->prefix,$query,$userId,$admin,$limit);
     }
 }
