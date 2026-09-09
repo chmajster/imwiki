@@ -17,10 +17,11 @@ try{
     $old=new Migrator($pdo,$tmp,'');$ran=$old->migrate();if(count($ran)!==4)throw new RuntimeException('Baseline migration count mismatch.');
     if($old->pending()!==[])throw new RuntimeException('Baseline migrations still pending.');
 
-    $full=new Migrator($pdo,$root.'/database/migrations','');$pending=$full->pending();if(count($pending)!==4)throw new RuntimeException('Expected four upgrade migrations, got '.count($pending));
+    $full=new Migrator($pdo,$root.'/database/migrations','');$pending=$full->pending();if(count($pending)!==5)throw new RuntimeException('Expected five upgrade migrations, got '.count($pending));
     $full->migrate();if($full->pending()!==[])throw new RuntimeException('Upgrade left pending migrations.');
     $column=$pdo->query("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='pages' AND COLUMN_NAME='pre_archive_status'")->fetchColumn();if((int)$column!==1)throw new RuntimeException('Hardening archive column missing after upgrade.');
     $index=$pdo->query("SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='jobs' AND INDEX_NAME='idx_jobs_status_available'")->fetchColumn();if((int)$index<1)throw new RuntimeException('Queue index missing after upgrade.');
+    $backupTable=$pdo->query("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='backup_artifacts'")->fetchColumn();if((int)$backupTable!==1)throw new RuntimeException('Async backup table missing after upgrade.');
 
     $pdo->prepare("DELETE FROM migrations WHERE migration=?")->execute(['008_hardening_reliability.php']);
     $retry=$full->migrate();if(!in_array('008_hardening_reliability.php',$retry,true)||$full->pending()!==[])throw new RuntimeException('Idempotent migration retry failed.');
